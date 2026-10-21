@@ -146,18 +146,36 @@ bun run deploy:vault                   # creates/deploys/inits launch-vault.<you
 
 Sub-accounts are created with the parent's public key. Re-running redeploys code (state kept) and, for the vault, ensures the relayer is registered. Each token launch needs roughly 1.8 NEAR of storage (see factory `get_required_deposit`), so users should top up ~2+ NEAR.
 
-## Cloudflare Pages (studio-web)
+## Cloudflare deploy
+
+Live (testnet): frontend https://one-shot-launchpad.sushmitsarmah.workers.dev, API https://one-shot-launchpad-api.sushmitsarmah.workers.dev
+
+### Frontend (studio-web): Workers static assets via Workers Builds
+
+The root `wrangler.jsonc` (Worker `one-shot-launchpad`, assets only, serves `apps/studio-web/dist`) is deployed by Cloudflare Workers Builds on every push to `main`:
 
 | setting | value |
 |---|---|
-| Root directory | `apps/studio-web` |
-| Build command | `bun install && bun run build` |
-| Output directory | `dist` |
-| Env vars | `PUBLIC_API_URL`, `PUBLIC_VAULT_CONTRACT`, (`PUBLIC_NEAR_RPC_URL`), `BUN_VERSION=1.4.2` |
+| Build command | `bun install && bun run build:web` |
+| Deploy command | `npx wrangler deploy` (repo root) |
+| Env vars | optional `PUBLIC_API_URL`, `PUBLIC_VAULT_CONTRACT`, `PUBLIC_NEAR_RPC_URL` |
 
-The build runs Astro under the Bun runtime (`bun --bun astro build`), so the Node version on the build image doesn't matter. The output is fully static (React island, `client:only`).
+The build runs Astro under the Bun runtime (`bun --bun astro build`), so the Node version on the build image doesn't matter. The output is fully static (React island, `client:only`). If the `PUBLIC_*` vars are unset, `apps/studio-web/src/lib/config.ts` falls back to the deployed testnet API, `launch-vault.osl-launchpad-5786.testnet` and `https://test.rpc.fastnear.com`.
 
-The orchestrator API is a plain Bun server (`bun run --cwd apps/orchestrator-api start`); host it anywhere that runs Bun (Fly, Railway, a VM). The Hono app is in `src/app.ts` if you later want to port it to Workers.
+### API (orchestrator-api): Cloudflare Worker
+
+`apps/orchestrator-api/wrangler.jsonc` (Worker `one-shot-launchpad-api`, entry `src/worker.ts`, `nodejs_compat`, `workers_dev: true`). Non-secret config is in its `vars`; on the first request the Worker reads its env bindings into `config` (`configureFromEnv`), so nothing depends on `process.env` at module load. The Bun server (`src/index.ts`, `bun run dev:api`) still reads `apps/orchestrator-api/.env`.
+
+```bash
+cd apps/orchestrator-api
+npx -y wrangler@4 dev                       # local Worker on :8787; reads secrets from .env / .dev.vars (gitignored)
+npx -y wrangler@4 deploy                    # or: bun run deploy:api from the repo root
+# one-time secrets (pipe values in; never commit them)
+printf '%s' "$NEARAI_API_KEY"      | npx -y wrangler@4 secret put NEARAI_API_KEY
+printf '%s' "$RELAYER_PRIVATE_KEY" | npx -y wrangler@4 secret put RELAYER_PRIVATE_KEY
+```
+
+A token with **Account > Workers Scripts: Edit** is enough (set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). The API is not deployed by Workers Builds; redeploy it with the command above after API changes. Keep `CORS_ORIGINS` in `vars` in sync with the frontend origin.
 
 ## Known limitations / later
 
