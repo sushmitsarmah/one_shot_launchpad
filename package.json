@@ -19,6 +19,7 @@
     "deploy:vault": "cd scripts && bun run deploy:vault",
     "typecheck": "cd apps/orchestrator-api && bun x tsc --noEmit && cd ../studio-web && bun x tsc --noEmit && cd ../../scripts && ../apps/orchestrator-api/node_modules/.bin/tsc --noEmit",
     "deploy:all": "cd scripts && bun run deploy:all",
+    "contracts:upgrade": "cd scripts && bun run upgrade",
     "test:api": "cd apps/orchestrator-api && bun test",
     "test": "bun run test:api && bun run contracts:test"
   }
