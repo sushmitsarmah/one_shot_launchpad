@@ -24,19 +24,24 @@ Land → connect a NEAR wallet → deposit NEAR as NEAR AI credits → generate 
 ```
 
 * **Generate**: API checks the user's vault balance ≥ `AI_COMPUTE_COST_YOCTO`, calls the LLM with a JSON schema, validates with zod, and only then the relayer calls `deduct_ai_compute`.
+* **Batch launch** (`POST /api/launch/batch`, 1-5 ideas): one `execute_sponsored_launch_batch` tx; the vault debits the whole batch up front, runs one detached factory call per item, and refunds each failed item on its own (results come from NEP-297 events). `/api/generate` takes `count` (1-5) and charges `count × AI_COMPUTE_COST_YOCTO` once.
+* **Token sites**: at launch the API writes the SiteConfig to Workers KV (`SITES` binding, namespace `yeetpad-sites`, key `site:<ticker>`) and a compact copy (≤2 KiB) goes on-chain in the factory record. `GET /api/site/:ticker` reads KV, falling back to the on-chain record; the static page `/t/` renders it, and `public/_redirects` (`/t/:ticker → /t/ 200`) makes every `/t/<ticker>` serve that page. `GET /api/launches/:account` lists a creator's tokens (factory `get_tokens_by_owner`) for "My launches" on `/app/`.
 * **Launch**: API checks the ticker is free and the balance covers the factory's `get_required_deposit`, then the relayer calls `execute_sponsored_launch`. The vault debits the user, calls `create_token` on the factory with the deposit, and its callback **refunds the user** if anything fails (factory panic or sub-account creation failure).
 
 ```
 apps/
   studio-web/          Astro (static): landing page at /, studio (React island) at /app/
   orchestrator-api/    Bun + Hono API (also a Cloudflare Worker): /api/auth/session, /api/generate,
-                       /api/launch, /api/balance/:account, /api/health
+                       /api/launch, /api/launch/batch, /api/site/:ticker, /api/launches/:account,
+                       /api/balance/:account, /api/health
 packages/
   schema/              zod: LaunchIdea, SiteConfig, API request/response types, NEAR helpers
 contracts/
   near-ft-token/       NEP-141 (+NEP-145/148) via near-contract-standards; full supply → owner
-  near-ft-factory/     create_token(ticker, metadata, total_supply, owner_id); embeds token wasm
-  near-launch-vault/   credits vault: deposit / deduct / sponsored launch / withdraw / relayers
+  near-ft-factory/     v0.2: create_token(ticker, metadata, total_supply, owner_id, site?); embeds token
+                       wasm; token registry + paginated views, NEP-297 events, pause/2-step owner/upgrade
+  near-launch-vault/   v0.2: credits vault: deposit / deduct / sponsored launch (single + batch ≤5) /
+                       withdraw / relayers; NEP-297 events, storage accounting, pause/owner/upgrade
   integration-tests/   near-workspaces sandbox tests (separate cargo workspace)
   build-contracts.sh   token → factory/res → factory, vault; outputs contracts/res/*.wasm
 scripts/               Bun deploy + init scripts for testnet
@@ -51,10 +56,14 @@ scripts/               Bun deploy + init scripts for testnet
 | `withdraw_unused(amount)` | user | transfers back unused credits |
 | `deduct_ai_compute(user_id, amount)` | relayer | moves amount to treasury |
 | `execute_sponsored_launch(user_id, token, deposit_required) -> Promise` | relayer | debits deposit + fee, refunds on failure |
+| `execute_sponsored_launch_batch(user_id, tokens, deposit_required) -> u32` | relayer | 1-5 tokens, unique valid tickers; per-item refund on failure |
+| `set_paused` / `propose_owner` / `accept_owner` / `update_contract` (+`migrate`) | owner | paused blocks deposits/launches, never `withdraw_unused` |
 | `add_relayer` / `remove_relayer` / `set_platform_fee_bps` / `set_ft_factory` / `withdraw_treasury` | owner | |
 | `get_balance(account_id)`, `get_relayers()`, `get_config()` | view | |
 
-`token` = `{ ticker, name, symbol?, icon?, decimals?, total_supply }`. Tickers: 2–16 chars, `a-z0-9`, starting with a letter (validated in the factory and in `packages/schema`). All balance math uses checked add/sub/mul.
+Factory views: `get_token(ticker)`, `get_tokens(from_index, limit≤50)`, `get_tokens_by_owner(owner_id, from_index, limit)`, `is_ticker_taken`, `get_required_deposit`, `get_config`. Events use standards `yeetpad_vault` and `yeetpad_factory`.
+
+`token` = `{ ticker, name, symbol?, icon?, decimals?, total_supply, site? }`. Tickers: 2–16 chars, `a-z0-9`, starting with a letter (validated in the factory and in `packages/schema`). All balance math uses checked add/sub/mul.
 
 ## Prerequisites
 
@@ -163,6 +172,8 @@ bun run deploy:factory                 # creates/deploys/inits ft-factory.<you>.
 bun run deploy:vault                   # creates/deploys/inits launch-vault.<you>.testnet with relayer + factory
 ```
 
+Upgrade in place (keeps state and addresses; runs `migrate`): `bun run contracts:upgrade`. Testnet is on v0.2.0.
+
 Sub-accounts are created with the parent's public key. Re-running redeploys code (state kept) and, for the vault, ensures the relayer is registered. Each token launch needs roughly 1.8 NEAR of storage (see factory `get_required_deposit`), so users should top up ~2+ NEAR.
 
 ## Cloudflare deploy
@@ -197,10 +208,12 @@ openssl rand -hex 32               | npx -y wrangler@4.86.0 secret put SESSION_S
 
 Wrangler is pinned to 4.86.0 because newer 4.x releases need Node 22 (the box has Node 20); with Node 22+ any 4.x works. `bun run deploy:api` needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the environment.
 
+Token sites need the KV namespace (`wrangler kv namespace create yeetpad-sites`; its id is in `kv_namespaces` in `apps/orchestrator-api/wrangler.jsonc`). The API token needs **Workers KV Storage: Edit** for that one-time create; `SITE_BASE` sets the public site URL (`https://yeetpad.fun`). Outside Workers (Bun dev, tests) an in-memory store is used.
+
 A token with **Account > Workers Scripts: Edit** is enough (set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). The API is not deployed by Workers Builds; redeploy it with the command above after API changes. Keep `CORS_ORIGINS` in `vars` in sync with the frontend origins (currently `https://yeetpad.fun`, `https://www.yeetpad.fun`, the workers.dev URL and `http://localhost:4321`). The NEP-413 recipient is the vault id, not the origin, so adding a domain needs no auth change.
 
 ## Known limitations / later
 
 * **Sessions are stateless**: a token can't be revoked before it expires (24h) except by rotating `SESSION_SECRET`. The nonce replay cache is per Worker isolate; the 10-minute freshness window is the main replay guard.
-* Cloudflare KV site storage, custom domains and the Solana path are out of scope here.
-* `buyUrl` points at the token's nearblocks page until a DEX pool is set up.
+* Custom domains and the Solana path are out of scope here.
+* **Liquidity (mainnet note)**: `buyUrl` points at the token's nearblocks page; there is no testnet DEX route. NEAR Intents / 1Click has no testnet deployment (per its docs) and Shore is mainnet-only. Meme.Cooking has a testnet factory (`factory.v10.meme-cooking.testnet`), but it mints its own token through an auction that its operator finalizes; it can't add liquidity to a token from our factory. On mainnet the path is: launch, then create a Rhea (Ref) pool or hand off to Shore/Meme.Cooking, and quote buys via 1Click.
