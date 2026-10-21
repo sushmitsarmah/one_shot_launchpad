@@ -36,13 +36,12 @@ const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 /// NEP-145 registration on our token (and wNEAR-style tokens).
 pub const TOKEN_STORAGE: u128 = 1_250_000_000_000_000_000_000;
 /// Upper bounds on what a relayer may ask the vault to spend on one listing.
-/// Per-listing top-up of the vault's own DCL storage (the deposit sits there until it is added).
-pub const VAULT_DCL_TOPUP: u128 = 20_000_000_000_000_000_000_000; // 0.02 NEAR
 pub const MAX_POOL_DEPOSIT: u128 = 200_000_000_000_000_000_000_000; // 0.2 NEAR
 pub const MAX_DCL_STORAGE: u128 = 1_000_000_000_000_000_000_000_000; // 1 NEAR
 const GAS_STORAGE: Gas = Gas::from_tgas(5);
 const GAS_CREATE_POOL: Gas = Gas::from_tgas(15);
-const GAS_FT_TRANSFER_CALL: Gas = Gas::from_tgas(50);
+/// DCL's ft_on_transfer burnt >40 Tgas on a first deposit (testnet), so leave plenty.
+const GAS_FT_TRANSFER_CALL: Gas = Gas::from_tgas(90);
 const GAS_ADD_LIQUIDITY: Gas = Gas::from_tgas(60);
 const GAS_NFT_TRANSFER: Gas = Gas::from_tgas(25);
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
@@ -91,6 +90,10 @@ pub struct ListParams {
     pub pool_deposit: U128,
     /// NEAR for the creator's DCL storage (needed to own the position); 0 if already registered.
     pub creator_dcl_storage: U128,
+    /// Optional top-up of the vault's own DCL storage (normally 0: the position slot is freed when
+    /// it moves to the creator). Kept on the vault's DCL account.
+    #[serde(default)]
+    pub vault_dcl_topup: Option<U128>,
 }
 
 /// Token parameters for a sponsored launch.
@@ -404,18 +407,22 @@ impl LaunchVault {
             NearToken::from_yoctonear(params.pool_deposit.0),
             GAS_CREATE_POOL,
         );
-        let vault_topup = Promise::new(self.dcl.clone()).function_call(
-            "storage_deposit",
-            json!({ "account_id": env::current_account_id(), "registration_only": false }).to_string().into_bytes(),
-            NearToken::from_yoctonear(VAULT_DCL_TOPUP),
-            GAS_STORAGE,
-        );
-        let mut joint = reg.and(pool).and(vault_topup);
+        let mut joint = reg.and(pool);
+        // Result order seen by on_list_prepared: [token regs, create_pool, creator storage?, vault top-up?]
         if params.creator_dcl_storage.0 > 0 {
             joint = joint.and(Promise::new(self.dcl.clone()).function_call(
                 "storage_deposit",
                 json!({ "account_id": user_id, "registration_only": false }).to_string().into_bytes(),
                 NearToken::from_yoctonear(params.creator_dcl_storage.0),
+                GAS_STORAGE,
+            ));
+        }
+        let topup = params.vault_dcl_topup.map(|v| v.0).unwrap_or(0);
+        if topup > 0 {
+            joint = joint.and(Promise::new(self.dcl.clone()).function_call(
+                "storage_deposit",
+                json!({ "account_id": env::current_account_id(), "registration_only": false }).to_string().into_bytes(),
+                NearToken::from_yoctonear(topup),
                 GAS_STORAGE,
             ));
         }
@@ -442,10 +449,12 @@ impl LaunchVault {
                 Err(_) => {
                     ok = false;
                     // Refund the parts that came back to the vault (failed calls return their deposit).
-                    let back = match i {
-                        1 => params.pool_deposit.0,
-                        2 => VAULT_DCL_TOPUP,
-                        3 => params.creator_dcl_storage.0,
+                    let creator = params.creator_dcl_storage.0;
+                    let topup = params.vault_dcl_topup.map(|v| v.0).unwrap_or(0);
+                    let back = match (i, creator > 0) {
+                        (1, _) => params.pool_deposit.0,
+                        (2, true) => creator,
+                        (2, false) | (3, true) => topup,
                         _ => 0,
                     };
                     if back > 0 {
@@ -554,7 +563,7 @@ impl LaunchVault {
             self.held.insert(token_id.clone(), h.clone());
         }
         emit(
-            if h.pool_id.is_some() && done { "listed" } else { "released" },
+            if had_lpt && nft_ok { "listed" } else { "released" },
             json!({
                 "account_id": creator, "token_id": token_id, "pool_id": h.pool_id, "lpt_id": lpt,
                 "position_to_creator": had_lpt && nft_ok, "tokens_to_creator": U128(balance),
@@ -834,7 +843,7 @@ fn default_wnear() -> AccountId {
 
 /// NEAR the creator pays for one listing (on top of the launch deposit).
 pub fn listing_cost(p: &ListParams) -> u128 {
-    p.pool_deposit.0 + p.creator_dcl_storage.0 + VAULT_DCL_TOPUP + 2 * TOKEN_STORAGE
+    p.pool_deposit.0 + p.creator_dcl_storage.0 + p.vault_dcl_topup.map(|v| v.0).unwrap_or(0) + 2 * TOKEN_STORAGE
 }
 
 /// One-sided range checks. Token as X: the whole range sits above the price (only X in it).
@@ -894,6 +903,7 @@ mod tests {
             right_point: 500_000,
             pool_deposit: U128(NearToken::from_millinear(20).as_yoctonear()),
             creator_dcl_storage: U128(NearToken::from_millinear(500).as_yoctonear()),
+            vault_dcl_topup: None,
         }
     }
 
@@ -939,7 +949,7 @@ mod tests {
         assert_eq!(v.get_balance(acc("alice.near")).0, after_launch - listing_cost(&params()));
         assert!(v.get_held(id.clone()).unwrap().listing);
         let pool = "moon.factory.near|wrap.near|10000".to_string();
-        with_results(vec![ok(b""), ok(&near_sdk::serde_json::to_vec(&pool).unwrap()), ok(b"{}"), ok(b"{}")]);
+        with_results(vec![ok(b""), ok(&near_sdk::serde_json::to_vec(&pool).unwrap()), ok(b"{}")]);
         let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
         assert_eq!(v.get_held(id.clone()).unwrap().pool_id, Some(pool));
         with_results(vec![]);
@@ -958,7 +968,7 @@ mod tests {
         ctx("relayer.near", NearToken::from_near(0));
         let _ = v.list_on_rhea(acc("alice.near"), id.clone(), params());
         let after = v.get_balance(acc("alice.near")).0;
-        with_results(vec![ok(b""), near_sdk::PromiseResult::Failed, ok(b"{}"), near_sdk::PromiseResult::Failed]);
+        with_results(vec![ok(b""), near_sdk::PromiseResult::Failed, near_sdk::PromiseResult::Failed]);
         let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
         assert_eq!(v.get_balance(acc("alice.near")).0, after + params().pool_deposit.0 + params().creator_dcl_storage.0);
         with_results(vec![ok(b"\"1000\"")]);
@@ -974,7 +984,7 @@ mod tests {
         let id = held_launch(&mut v);
         ctx("relayer.near", NearToken::from_near(0));
         let _ = v.list_on_rhea(acc("alice.near"), id.clone(), params());
-        with_results(vec![ok(b""), ok(b"\"p\""), ok(b"{}"), ok(b"{}")]);
+        with_results(vec![ok(b""), ok(b"\"p\""), ok(b"{}")]);
         let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
         with_results(vec![]);
         let _ = v.on_liquidity_added(id.clone(), Ok("p#1".into()));
