@@ -10,7 +10,9 @@ beforeAll(async () => {
   process.env.NEAR_MOCK = "1";
   process.env.SESSION_SECRET = "test-secret";
   process.env.VAULT_CONTRACT = RECIPIENT;
+  process.env.LOCKED = "0"; // these tests exercise the open app; the gate has its own tests (gate.test.ts)
   ({ app } = await import("./app"));
+  (await import("./config")).configureFromEnv({});
 });
 
 const tokens = new Map<string, string>();

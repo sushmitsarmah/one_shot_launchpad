@@ -1,8 +1,22 @@
 import type { BatchLaunchResponse, GenerateResponse, LaunchedToken, LaunchIdea, LaunchResponse, SiteConfig } from "@osl/schema";
 import { API_URL } from "./config";
-import { clearSession } from "./auth";
+import { NotWhitelistedError, clearSession, isNotWhitelisted } from "./auth";
 
 export class UnauthorizedError extends Error {}
+export { NotWhitelistedError };
+
+/** 401 -> session gone; 403 not_whitelisted -> locked out; other errors -> Error. */
+function check(r: Response, j: { error?: string; code?: string }) {
+  if (r.status === 401) {
+    clearSession();
+    throw new UnauthorizedError(j.error ?? "session expired; verify your wallet again");
+  }
+  if (isNotWhitelisted(r.status, j)) {
+    clearSession();
+    throw new NotWhitelistedError(null, j.error);
+  }
+  if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+}
 
 async function post<T>(path: string, body: unknown, token: string): Promise<T> {
   const r = await fetch(`${API_URL}${path}`, {
@@ -11,11 +25,7 @@ async function post<T>(path: string, body: unknown, token: string): Promise<T> {
     body: JSON.stringify(body),
   });
   const j = await r.json().catch(() => ({}));
-  if (r.status === 401) {
-    clearSession();
-    throw new UnauthorizedError(j.error ?? "session expired; verify your wallet again");
-  }
-  if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+  check(r, j);
   return j as T;
 }
 
@@ -32,11 +42,7 @@ export async function saveSiteSettings(id: string, gaId: string | null, token: s
     body: JSON.stringify({ gaId }),
   });
   const j = await r.json().catch(() => ({}));
-  if (r.status === 401) {
-    clearSession();
-    throw new UnauthorizedError(j.error ?? "session expired; verify your wallet again");
-  }
-  if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+  check(r, j);
   return j as { ok: true; ticker: string; gaId: string | null };
 }
 
@@ -55,3 +61,14 @@ export const fetchSite = (ticker: string) =>
 
 export const launch = (ownerWallet: string, idea: LaunchIdea, token: string) =>
   post<LaunchResponse>("/api/launch", { ownerWallet, idea }, token);
+
+/** Is the app locked (whitelist only)? Fails closed: an unreachable API counts as locked. */
+export async function appLocked(): Promise<boolean> {
+  try {
+    const j = await get<{ locked?: boolean }>("/api/health");
+    return j.locked !== false;
+  } catch {
+    return true;
+  }
+}
+

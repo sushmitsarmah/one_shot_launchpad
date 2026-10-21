@@ -20,6 +20,10 @@
     "FT_FACTORY_CONTRACT": "ft-factory.osl-launchpad-5786.testnet",
     "RELAYER_ACCOUNT_ID": "osl-launchpad-5786.testnet",
     "SITE_BASE": "https://yeetpad.fun",
+    // Access gate (see README "Access gate"). LOCKED=1: only ALLOWED_ACCOUNTS can sign in / generate / launch.
+    // Add an account: `bun run allow <account>.testnet && bun run deploy:api` from the repo root.
+    "LOCKED": "1",
+    "ALLOWED_ACCOUNTS": "osl-e2e-mvhxupmb.testnet",
     "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad.sushmitsarmah.workers.dev,http://localhost:4321"
   }
 }

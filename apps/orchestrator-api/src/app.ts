@@ -13,14 +13,17 @@ import {
   SessionRequest,
   NearAccountId,
   SiteConfig,
+  WaitlistRequest,
   formatNear,
+  type WaitlistResponse,
   type GenerateResponse,
   type LaunchResponse,
 } from "@osl/schema";
 import { config } from "./config";
 import { generateIdeas } from "./llm";
 import { tokenIconDataUri } from "./icon";
-import { buildSiteConfig, compactSite, findSite, getSite, getViews, putSite, saveSite, siteStoreKind, siteUrl } from "./sites";
+import { buildSiteConfig, compactSite, findSite, getSite, getViews, kvStore, putSite, saveSite, siteStoreKind, siteUrl } from "./sites";
+import { WAITLIST_MAX_BODY, addToWaitlist, assertAllowed, takeRateLimit } from "./gate";
 import { AuthError, consumeNonceInMemory, issueSession, verifySession, verifySignIn } from "./auth";
 import {
   deductAiCompute,
@@ -63,7 +66,7 @@ app.use(
 );
 
 app.onError((err, c) => {
-  if (err instanceof AuthError) return c.json({ error: err.message }, err.status as 401 | 403);
+  if (err instanceof AuthError) return c.json({ error: err.message, ...(err.code ? { code: err.code } : {}) }, err.status as 401 | 403);
   console.error(err);
   const msg = err instanceof Error ? err.message : String(err);
   const status = /insufficient balance/i.test(msg) ? 402 : 500;
@@ -83,6 +86,7 @@ app.get("/api/health", (c) =>
     maxBatch: 5,
     siteStore: siteStoreKind(),
     siteBase: config.siteBase,
+    locked: config.locked,
   }),
 );
 
@@ -104,6 +108,8 @@ app.post("/api/auth/session", async (c) => {
     isFullAccessKey: config.nearMock ? undefined : isFullAccessKey,
     consumeNonce: (n, exp) => consumeNonceInMemory(n, exp),
   });
+  // Checked after the signature, so the allowlist can't be probed without the account's key.
+  assertAllowed(accountId, config);
   return c.json(await issueSession(accountId, sessionSecret()));
 });
 
@@ -115,6 +121,12 @@ const requireSession = createMiddleware<Env>(async (c, next) => {
   await next();
 });
 
+/** While locked, only allowlisted accounts pass (rejects older sessions of non-allowlisted accounts). */
+const requireAllowed = createMiddleware<Env>(async (c, next) => {
+  assertAllowed(c.var.account, config);
+  await next();
+});
+
 app.get("/api/auth/me", requireSession, (c) => c.json({ accountId: c.var.account }));
 
 function ownerFor(c: { var: { account: string } }, claimed?: string) {
@@ -122,7 +134,7 @@ function ownerFor(c: { var: { account: string } }, claimed?: string) {
   return c.var.account;
 }
 
-app.post("/api/generate", requireSession, async (c) => {
+app.post("/api/generate", requireSession, requireAllowed, async (c) => {
   const body = GenerateRequest.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
   const { prompt } = body.data;
@@ -142,7 +154,7 @@ app.post("/api/generate", requireSession, async (c) => {
   return c.json(res);
 });
 
-app.post("/api/launch", requireSession, async (c) => {
+app.post("/api/launch", requireSession, requireAllowed, async (c) => {
   const body = LaunchRequest.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
   const { idea } = body.data;
@@ -188,7 +200,7 @@ function tokenArgs(idea: import("@osl/schema").LaunchIdea, icon: string): TokenA
 }
 
 /** Launch 1-5 ideas in one vault call; each item is charged/refunded on its own. */
-app.post("/api/launch/batch", requireSession, async (c) => {
+app.post("/api/launch/batch", requireSession, requireAllowed, async (c) => {
   const body = BatchLaunchRequest.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
   const ownerWallet = ownerFor(c, body.data.ownerWallet);
@@ -224,6 +236,29 @@ app.post("/api/launch/batch", requireSession, async (c) => {
   }
   const res: BatchLaunchResponse = { txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}`, results: out };
   return c.json(res, out.some((r) => r.ok) ? 200 : 502);
+});
+
+// ---------- whitelist (waitlist) ----------
+/**
+ * Join the waitlist. Public, idempotent, soft rate-limited per IP. Stored as `waitlist:<account>` in the
+ * SITES KV namespace; there is deliberately no listing endpoint (read it with `wrangler kv key list`).
+ */
+app.post("/api/whitelist", async (c) => {
+  const len = Number(c.req.header("content-length") ?? 0);
+  if (len > WAITLIST_MAX_BODY) return c.json({ error: "request too large" }, 413);
+  const text = await c.req.text().catch(() => "");
+  if (text.length > WAITLIST_MAX_BODY) return c.json({ error: "request too large" }, 413);
+  let json: unknown = null;
+  try {
+    json = JSON.parse(text);
+  } catch {}
+  const body = WaitlistRequest.safeParse(json);
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  if (!(await takeRateLimit(kvStore(), ip))) return c.json({ error: "too many signups from here; try again later" }, 429);
+  const { already } = await addToWaitlist(kvStore(), body.data);
+  const res: WaitlistResponse = { ok: true, account: body.data.account, already };
+  return c.json(res);
 });
 
 // ---------- token sites (public) ----------
@@ -270,7 +305,7 @@ app.get("/api/site/:id", async (c) => {
 });
 
 /** Creator settings for a token site. Owner-only: the session account must be the site's ownerWallet. */
-app.put("/api/site/:id/settings", requireSession, async (c) => {
+app.put("/api/site/:id/settings", requireSession, requireAllowed, async (c) => {
   const id = c.req.param("id").toLowerCase();
   if (!SITE_ID_RE.test(id)) return c.json({ error: "invalid ticker or slug" }, 400);
   const body = SiteSettingsRequest.safeParse(await c.req.json().catch(() => null));

@@ -180,3 +180,4 @@
   .marquee-track { animation: none; }
   .marquee { overflow-x: auto; }
 }
+.cta-card .cta-alt { margin: 1.2rem 0 0; font-size: 0.98rem; }

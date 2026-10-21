@@ -1,6 +1,8 @@
 ---
 import Base from "../layouts/Base.astro";
 import "../styles/landing.css";
+import "../styles/waitlist.css";
+import WaitlistCta from "../components/WaitlistForm.tsx";
 
 const steps = [
   { n: "1", emoji: "🔌", title: "Connect a NEAR wallet", body: "MyNearWallet, Meteor or HERE. Testnet accounts are free.", color: "var(--sky)" },
@@ -54,7 +56,7 @@ const faqs = [
       <div class="blob blob-b" aria-hidden="true"></div>
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <span class="pill hero-pill">✨ AI token factory · NEAR testnet</span>
+          <span class="pill hero-pill">✨ AI token factory · NEAR testnet · 🔒 invite-only beta</span>
           <h1 class="hero-title">
             One prompt.<br />
             <span class="hl hl-pink">One token.</span><br />
@@ -65,7 +67,7 @@ const faqs = [
             then launches a real NEP-141 token and its landing site on NEAR.
           </p>
           <div class="hero-ctas">
-            <a class="btn btn-lg" href="/app/">Go to app <span class="arrow" aria-hidden="true">→</span></a>
+            <WaitlistCta client:load />
             <a class="link-squiggle" href="#how">How it works</a>
           </div>
           <ul class="hero-facts">
@@ -197,8 +199,9 @@ const faqs = [
         <div class="cta-card">
           <span class="cta-emoji" aria-hidden="true">🏭</span>
           <h2>Ready to yeet?</h2>
-          <p>Bring a wallet and a weird idea. We'll handle the rest.</p>
-          <a class="btn btn-lg btn-pink" href="/app/">Go to app <span class="arrow" aria-hidden="true">→</span></a>
+          <p>We're invite-only for now. Grab a spot on the whitelist, bring a weird idea, and we'll handle the rest.</p>
+          <WaitlistCta client:visible label="Join the whitelist" className="btn btn-lg btn-pink" />
+          <p class="cta-alt"><a class="link-squiggle" href="/app/">Already whitelisted? Open the studio</a></p>
         </div>
       </div>
     </section>

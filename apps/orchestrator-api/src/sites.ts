@@ -8,16 +8,29 @@ import { config } from "./config";
 
 export interface KVLike {
   get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
+  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>;
+  delete?(key: string): Promise<void>;
 }
 
 class MemoryKV implements KVLike {
   private m = new Map<string, string>();
+  private exp = new Map<string, number>();
   async get(k: string) {
+    const e = this.exp.get(k);
+    if (e !== undefined && e <= Date.now()) {
+      this.m.delete(k);
+      this.exp.delete(k);
+    }
     return this.m.get(k) ?? null;
   }
-  async put(k: string, v: string) {
+  async put(k: string, v: string, opts?: { expirationTtl?: number }) {
     this.m.set(k, v);
+    if (opts?.expirationTtl) this.exp.set(k, Date.now() + opts.expirationTtl * 1000);
+    else this.exp.delete(k);
+  }
+  async delete(k: string) {
+    this.m.delete(k);
+    this.exp.delete(k);
   }
 }
 
@@ -30,6 +43,8 @@ export function setSiteStore(kv: KVLike | undefined) {
   }
 }
 export const siteStoreKind = () => (usingKv ? "kv" : "memory");
+/** The shared KV store (also used for waitlist entries and rate-limit counters). */
+export const kvStore = (): KVLike => store;
 
 const key = (ticker: string) => `site:${ticker}`;
 const slugKey = (slug: string) => `slug:${slug}`;

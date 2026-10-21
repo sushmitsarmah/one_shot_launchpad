@@ -45,6 +45,14 @@ export function buildConfig(src: EnvSource = {}) {
     // Auth: HMAC secret for session tokens (wrangler secret / .env). NEP-413 recipient defaults to the vault id.
     sessionSecret: env("SESSION_SECRET"),
     authRecipient: env("AUTH_RECIPIENT", env("VAULT_CONTRACT", "launch-vault.testnet")) as string,
+
+    // Access gate. LOCKED defaults ON: only ALLOWED_ACCOUNTS (comma-separated NEAR ids) may sign in or
+    // spend/launch. Set LOCKED=0 to open the app to everyone.
+    locked: !["0", "false", "no", "off"].includes((env("LOCKED", "1") as string).toLowerCase()),
+    allowedAccounts: (env("ALLOWED_ACCOUNTS", "") as string)
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
   };
 }
 

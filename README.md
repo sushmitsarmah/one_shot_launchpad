@@ -32,7 +32,7 @@ Land → connect a NEAR wallet → deposit NEAR as NEAR AI credits → generate 
 ```
 apps/
   studio-web/          Astro (static): landing page at /, studio (React island) at /app/
-  orchestrator-api/    Bun + Hono API (also a Cloudflare Worker): /api/auth/session, /api/generate,
+  orchestrator-api/    Bun + Hono API (also a Cloudflare Worker): /api/auth/session, /api/whitelist, /api/generate,
                        /api/launch, /api/launch/batch, /api/site/:ticker, /api/launches/:account,
                        /api/balance/:account, /api/health
 packages/
@@ -132,6 +132,8 @@ Routes in the web app: `/` is the landing page, `/app/` is the studio (wallet co
 | `EXPLORER_BASE` | `https://testnet.nearblocks.io` | |
 | `SESSION_SECRET` | random per process | HMAC key for session tokens; **set it** (secret) in any shared deployment |
 | `AUTH_RECIPIENT` | `VAULT_CONTRACT` | NEP-413 `recipient` the sign-in must be addressed to (the web app uses the vault id) |
+| `LOCKED` | **on** | access gate; `0`/`false` opens the app to every account (see [Access gate](#access-gate-whitelist)) |
+| `ALLOWED_ACCOUNTS` | empty | comma-separated NEAR account ids allowed in while `LOCKED` |
 
 ### `apps/studio-web/.env` (build-time, `PUBLIC_*`)
 
@@ -159,6 +161,36 @@ Never commit real `.env` files; only `.env.example` is tracked.
 Inline wallets (Meteor, HERE, the MyNearWallet popup) return the signature directly. For redirect-style wallets the pending request is kept in `localStorage`, and on return to `/app/` the studio reads `accountId`/`publicKey`/`signature` (or `error`) from the URL hash or query, finishes the exchange and strips them from the URL.
 
 Tests: `src/auth.test.ts` (signatures built with near-api-js's own NEP-413 signer: valid, wrong account, wrong recipient, stale/future timestamp, tampered message/nonce, other key, non-full-access key, replay, token forgery/expiry) and `src/app.test.ts` (401/403 paths in mock mode).
+
+## Access gate (whitelist)
+
+The app is **locked** (`LOCKED=1`, the default). While locked:
+
+* `POST /api/auth/session` verifies the signature as usual, then answers **403** `{ "error": "...", "code": "not_whitelisted" }` for any account not in `ALLOWED_ACCOUNTS` (checked after the signature, so the list can't be probed).
+* `POST /api/generate`, `/api/launch`, `/api/launch/batch` and `PUT /api/site/:id/settings` re-check the allowlist on every call, so sessions issued before the lock (or before an account was removed) get the same 403.
+* Public reads keep working: `/api/health` (reports `locked`, never the list), `/api/site/:id`, `/api/launches/:account`, `/api/balance/:account`, and the token pages `/t/*`.
+* The web app reads `locked` from `/api/health`: the landing CTA is "Join the whitelist", `/app/` shows the whitelist form (with an "Already whitelisted? Connect your wallet" link), and a 403 `not_whitelisted` shows "You're not on the whitelist yet" plus the form.
+
+The allowlist lives in `apps/orchestrator-api/wrangler.jsonc` (`vars.ALLOWED_ACCOUNTS`, initially only the e2e account `osl-e2e-mvhxupmb.testnet`).
+
+**Add an account** (from the repo root, then commit the `wrangler.jsonc` change):
+
+```bash
+bun run allow you.testnet && bun run deploy:api
+```
+
+`bun run allow --remove you.testnet && bun run deploy:api` removes one, `bun run allow --list` prints the list. (`scripts/allow-account.ts` validates the id and edits the `ALLOWED_ACCOUNTS` var.) To open the app to everyone, set `"LOCKED": "0"` in the same file and `bun run deploy:api`.
+
+### Waitlist signups
+
+`POST /api/whitelist` `{ "account": "<near id>", "contact"?: "<email or @handle, ≤100 chars>" }` (body ≤ 1 KiB) stores `waitlist:<account>` → `{account, contact, createdAt, updatedAt}` in the `SITES` KV namespace (`yeetpad-sites`). It is idempotent (`already: true` on repeats; the first `createdAt` is kept, a new contact updates the entry) and soft rate-limited to 10 signups per IP per hour (`wlrl:<ip>:<window>` keys with a TTL). There is no listing endpoint; read the list with wrangler (from `apps/orchestrator-api`):
+
+```bash
+npx wrangler kv key list --binding SITES --remote --prefix waitlist:
+npx wrangler kv key get --binding SITES --remote "waitlist:someone.testnet"
+```
+
+Tests: `src/gate.test.ts` (allowlist + lock parsing, 403 on session and on every spend/launch/settings endpoint for old sessions, public reads, waitlist validation, idempotency, size and rate limits).
 
 ## NEAR AI
 

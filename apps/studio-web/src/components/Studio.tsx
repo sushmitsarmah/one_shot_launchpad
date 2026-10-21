@@ -3,8 +3,9 @@ import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type Launch
 import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, signOut } from "../lib/wallet";
 import { getVaultBalance } from "../lib/near";
-import { generate, launchBatch, myLaunches, saveSiteSettings, UnauthorizedError } from "../lib/api";
-import { clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
+import { appLocked, generate, launchBatch, myLaunches, saveSiteSettings, UnauthorizedError } from "../lib/api";
+import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
+import { WaitlistForm } from "./WaitlistForm";
 import { VAULT_CONTRACT } from "../lib/config";
 
 type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings";
@@ -23,16 +24,25 @@ export default function Studio() {
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<SessionResponse | null>(null);
+  /** null = still asking the API; assume locked until it says otherwise. */
+  const [locked, setLocked] = useState<boolean | null>(null);
+  const [notWhitelisted, setNotWhitelisted] = useState(false);
+  const [showConnect, setShowConnect] = useState(false);
+
+  useEffect(() => {
+    appLocked().then(setLocked);
+  }, []);
 
   // Finish a redirect-style signMessage (MyNearWallet returning to /app/ with the signature in the URL).
   useEffect(() => {
     completeRedirectSignIn()
       .then((s) => s && setSession(s))
-      .catch((e) => setError((e as Error).message));
+      .catch((e) => (e instanceof NotWhitelistedError ? setNotWhitelisted(true) : setError((e as Error).message)));
   }, []);
 
   // Session belongs to one account: drop it when the wallet account changes.
   useEffect(() => {
+    setNotWhitelisted(false);
     if (!account) return setSession(null);
     const s = getSession(account);
     if (!s) {
@@ -93,6 +103,11 @@ export default function Studio() {
       await fn();
     } catch (e) {
       if (e instanceof UnauthorizedError) setSession(null);
+      if (e instanceof NotWhitelistedError) {
+        setSession(null);
+        setNotWhitelisted(true);
+        return;
+      }
       setError((e as Error).message ?? String(e));
     } finally {
       setBusy(null);
@@ -100,6 +115,65 @@ export default function Studio() {
   };
 
   const connect = async () => (await initWallet()).modal.show();
+
+  const isLocked = locked !== false;
+
+  // Signed in (or tried to) with an account that isn't on the allowlist.
+  if (account && notWhitelisted) {
+    return (
+      <section className="card center locked-card">
+        <span className="locked-emoji" aria-hidden="true">🚧</span>
+        <h2>You're not on the whitelist yet</h2>
+        <p className="muted">
+          <strong>{account}</strong> can't yeet just yet: Yeetpad is invite-only for now. Hop on the list and we'll wave you in soon.
+        </p>
+        <WaitlistForm key={account} initialAccount={account} />
+        <p className="small locked-alt">
+          <button className="link" onClick={() => signOut().then(() => setSession(null))}>Sign out / switch wallet</button>
+        </p>
+      </section>
+    );
+  }
+
+  // Locked: lead with the whitelist form; whitelisted folks can still connect.
+  if (!account && isLocked && !showConnect) {
+    return (
+      <section className="card center locked-card">
+        <span className="locked-emoji" aria-hidden="true">🔒</span>
+        <h2>The factory is invite-only (for now)</h2>
+        <p className="muted">We're letting yeeters in a few at a time. Join the whitelist and we'll open the door for your wallet.</p>
+        <WaitlistForm />
+        {error && <p className="error">{error}</p>}
+        <p className="small muted locked-alt">
+          Already whitelisted?{" "}
+          <button className="link" onClick={() => setShowConnect(true)}>
+            Connect your wallet
+          </button>
+        </p>
+      </section>
+    );
+  }
+
+  // Locked + connected but not verified yet: verify first, so nobody tops up credits they can't use.
+  if (account && isLocked && !session) {
+    return (
+      <section className="card center locked-card">
+        <span className="locked-emoji" aria-hidden="true">🎟️</span>
+        <h2>Show your ticket</h2>
+        <p className="muted">
+          Yeetpad is whitelist-only right now. Sign a short message with <strong>{account}</strong> (free, no transaction) so we can check
+          you're on the list.
+        </p>
+        <div className="row" style={{ justifyContent: "center" }}>
+          <button disabled={busy !== null} onClick={() => run("verify", async () => void (await authToken(account)))}>
+            {busy === "verify" ? "Sign in wallet…" : "Verify wallet"}
+          </button>
+          <button className="ghost" onClick={() => signOut().then(() => setSession(null))}>Sign out</button>
+        </div>
+        {error && <p className="error">{error}</p>}
+      </section>
+    );
+  }
 
   if (!account) {
     return (

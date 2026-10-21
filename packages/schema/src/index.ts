@@ -222,3 +222,23 @@ export const SiteSettingsRequest = z.object({
   gaId: z.union([z.string().trim().toUpperCase().regex(GA_ID_RE, "gaId must look like G-XXXXXXXX"), z.literal(""), z.null()]),
 });
 export type SiteSettingsRequest = z.infer<typeof SiteSettingsRequest>;
+
+// ---------- access gate / whitelist ----------
+/** Error code returned (HTTP 403) when the app is locked and the account is not on the allowlist. */
+export const NOT_WHITELISTED = "not_whitelisted";
+export const WAITLIST_CONTACT_MAX = 100;
+const EMAIL_RE = /^[^\s@<>"'`]{1,64}@[^\s@<>"'`]+\.[^\s@<>"'`]{2,}$/;
+const HANDLE_RE = /^@[A-Za-z0-9_.-]{1,50}$/;
+/** Optional contact for the whitelist: an email or an @handle (X/Telegram/Discord). */
+export const WaitlistContact = z
+  .string()
+  .trim()
+  .max(WAITLIST_CONTACT_MAX, `contact must be at most ${WAITLIST_CONTACT_MAX} characters`)
+  .refine((s) => s === "" || EMAIL_RE.test(s) || HANDLE_RE.test(s), "contact must be an email or an @handle");
+export const WaitlistRequest = z.object({
+  account: z.string().trim().toLowerCase().pipe(NearAccountId),
+  contact: WaitlistContact.optional().nullable(),
+});
+export type WaitlistRequest = z.infer<typeof WaitlistRequest>;
+export const WaitlistResponse = z.object({ ok: z.literal(true), account: z.string(), already: z.boolean() });
+export type WaitlistResponse = z.infer<typeof WaitlistResponse>;

@@ -4,7 +4,7 @@
  * flows come back to /app/ with accountId/publicKey/signature in the URL hash (or query), which
  * `completeRedirectSignIn()` picks up on page load.
  */
-import { buildSignInMessage, type SessionResponse } from "@osl/schema";
+import { NOT_WHITELISTED, buildSignInMessage, type SessionResponse } from "@osl/schema";
 import { API_URL, VAULT_CONTRACT } from "./config";
 import { initWallet } from "./wallet";
 
@@ -20,6 +20,14 @@ interface Pending {
   recipient: string;
   callbackUrl: string;
 }
+
+/** The app is locked and this account is not on the allowlist (API 403 `not_whitelisted`). */
+export class NotWhitelistedError extends Error {
+  constructor(readonly accountId: string | null, message = "you're not on the whitelist yet") {
+    super(message);
+  }
+}
+export const isNotWhitelisted = (status: number, body: { code?: string }) => status === 403 && body?.code === NOT_WHITELISTED;
 
 const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
 
@@ -53,6 +61,10 @@ async function exchange(p: Pending, signed: { accountId: string; publicKey: stri
     }),
   });
   const j = await r.json().catch(() => ({}));
+  if (isNotWhitelisted(r.status, j)) {
+    clearSession();
+    throw new NotWhitelistedError(p.accountId, j.error);
+  }
   if (!r.ok) throw new Error(j.error ?? `sign-in failed (HTTP ${r.status})`);
   const s = j as SessionResponse;
   localStorage.setItem(SESSION_KEY, JSON.stringify(s));

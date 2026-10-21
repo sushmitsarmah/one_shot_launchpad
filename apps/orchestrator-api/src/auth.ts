@@ -82,7 +82,7 @@ export function decodeSignature(sig: string): Uint8Array {
 
 // ---------- verification ----------
 export class AuthError extends Error {
-  constructor(message: string, readonly status = 401) {
+  constructor(message: string, readonly status = 401, readonly code?: string) {
     super(message);
   }
 }
