@@ -42,10 +42,10 @@ const GAS_STORAGE: Gas = Gas::from_tgas(5);
 const GAS_CREATE_POOL: Gas = Gas::from_tgas(15);
 /// DCL's ft_on_transfer burnt >40 Tgas on a first deposit (testnet), so leave plenty.
 const GAS_FT_TRANSFER_CALL: Gas = Gas::from_tgas(90);
-const GAS_ADD_LIQUIDITY: Gas = Gas::from_tgas(60);
 const GAS_NFT_TRANSFER: Gas = Gas::from_tgas(25);
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_VIEW: Gas = Gas::from_tgas(5);
+const GAS_VIEW_LIST: Gas = Gas::from_tgas(20);
 const GAS_WITHDRAW_ASSET: Gas = Gas::from_tgas(40);
 const GAS_ON_PREPARED: Gas = Gas::from_tgas(30);
 const GAS_ON_LIQUIDITY: Gas = Gas::from_tgas(25);
@@ -94,6 +94,10 @@ pub struct ListParams {
     /// it moves to the creator). Kept on the vault's DCL account.
     #[serde(default)]
     pub vault_dcl_topup: Option<U128>,
+    /// The pool already exists (e.g. re-listing): only add liquidity. `init_point` must then be the
+    /// pool's current point.
+    #[serde(default)]
+    pub skip_create_pool: Option<bool>,
 }
 
 /// Token parameters for a sponsored launch.
@@ -376,39 +380,43 @@ impl LaunchVault {
 
     // ---------- Rhea listing ----------
 
-    /// Relayer only. Lists a held launch on Rhea DCL: registers storage, creates the pool, adds
-    /// `pool_amount` one-sided and hands the position + all remaining tokens to the creator.
-    /// Debits `pool_deposit + creator_dcl_storage + 2 token registrations` from the creator's credit.
+    /// Relayer only. Lists a held launch on Rhea DCL: registers storage, creates the pool (unless
+    /// `skip_create_pool`), adds `pool_amount` one-sided with a HotZap deposit and hands the position
+    /// + all remaining tokens to the creator. Debits `listing_cost(params)` from the creator's credit.
     pub fn list_on_rhea(&mut self, user_id: AccountId, token_id: AccountId, params: ListParams) -> Promise {
         self.assert_relayer();
         self.assert_not_paused();
         let mut h = self.held.get(&token_id).cloned().unwrap_or_else(|| env::panic_str("token is not held for listing"));
         require!(h.creator == user_id, "user is not the token's creator");
         require!(!h.listing, "listing already in progress");
-        require!(h.pool_id.is_none(), "token is already listed; use release");
+        require!(h.lpt_id.is_none(), "position hand-off pending; use release");
         let token_is_x = token_id < self.wnear;
         check_points(token_is_x, params.init_point, params.left_point, params.right_point);
         require!(params.pool_amount.0 > 0, "pool_amount must be > 0");
-        require!(params.pool_deposit.0 > 0 && params.pool_deposit.0 <= MAX_POOL_DEPOSIT, "pool_deposit out of range");
+        let skip = params.skip_create_pool == Some(true);
+        require!(skip || (params.pool_deposit.0 > 0 && params.pool_deposit.0 <= MAX_POOL_DEPOSIT), "pool_deposit out of range");
         require!(params.creator_dcl_storage.0 <= MAX_DCL_STORAGE, "creator_dcl_storage out of range");
+        require!(params.vault_dcl_topup.map(|v| v.0).unwrap_or(0) <= MAX_DCL_STORAGE, "vault_dcl_topup out of range");
         let cost = listing_cost(&params);
         self.debit(&user_id, cost);
         h.listing = true;
+        h.pool_id = None;
         self.held.insert(token_id.clone(), h);
         emit("list_start", json!({ "account_id": user_id, "token_id": token_id, "cost": U128(cost) }));
 
         let (x, y) = if token_is_x { (token_id.clone(), self.wnear.clone()) } else { (self.wnear.clone(), token_id.clone()) };
-        let reg = Promise::new(token_id.clone())
+        let mut joint = Promise::new(token_id.clone())
             .function_call("storage_deposit", json!({ "account_id": self.dcl, "registration_only": true }).to_string().into_bytes(), NearToken::from_yoctonear(TOKEN_STORAGE), GAS_STORAGE)
             .function_call("storage_deposit", json!({ "account_id": user_id, "registration_only": true }).to_string().into_bytes(), NearToken::from_yoctonear(TOKEN_STORAGE), GAS_STORAGE);
-        let pool = Promise::new(self.dcl.clone()).function_call(
-            "create_pool",
-            json!({ "token_a": x, "token_b": y, "fee": DCL_FEE, "init_point": params.init_point }).to_string().into_bytes(),
-            NearToken::from_yoctonear(params.pool_deposit.0),
-            GAS_CREATE_POOL,
-        );
-        let mut joint = reg.and(pool);
-        // Result order seen by on_list_prepared: [token regs, create_pool, creator storage?, vault top-up?]
+        // Result order seen by on_list_prepared follows prep_refunds(): regs, pool?, creator storage?, vault top-up?
+        if !skip {
+            joint = joint.and(Promise::new(self.dcl.clone()).function_call(
+                "create_pool",
+                json!({ "token_a": x, "token_b": y, "fee": DCL_FEE, "init_point": params.init_point }).to_string().into_bytes(),
+                NearToken::from_yoctonear(params.pool_deposit.0),
+                GAS_CREATE_POOL,
+            ));
+        }
         if params.creator_dcl_storage.0 > 0 {
             joint = joint.and(Promise::new(self.dcl.clone()).function_call(
                 "storage_deposit",
@@ -436,83 +444,90 @@ impl LaunchVault {
 
     #[private]
     pub fn on_list_prepared(&mut self, user_id: AccountId, token_id: AccountId, params: ListParams) -> Promise {
-        let n = env::promise_results_count();
+        let refunds = prep_refunds(&params);
         let mut ok = true;
-        let mut pool_id: Option<String> = None;
-        for i in 0..n {
-            match env::promise_result_checked(i, 1024) {
-                Ok(bytes) => {
-                    if i == 1 {
-                        pool_id = near_sdk::serde_json::from_slice::<String>(&bytes).ok();
-                    }
-                }
-                Err(_) => {
-                    ok = false;
-                    // Refund the parts that came back to the vault (failed calls return their deposit).
-                    let creator = params.creator_dcl_storage.0;
-                    let topup = params.vault_dcl_topup.map(|v| v.0).unwrap_or(0);
-                    let back = match (i, creator > 0) {
-                        (1, _) => params.pool_deposit.0,
-                        (2, true) => creator,
-                        (2, false) | (3, true) => topup,
-                        _ => 0,
-                    };
-                    if back > 0 {
-                        let bal = self.balance_of(&user_id).checked_add(back).expect("overflow");
-                        self.user_balances.insert(user_id.clone(), bal);
-                    }
+        for (i, back) in refunds.iter().enumerate() {
+            if env::promise_result_checked(i as u64, 1024).is_err() {
+                ok = false;
+                // A failed call returns its deposit to the vault: give it back to the creator.
+                if *back > 0 {
+                    let bal = self.balance_of(&user_id).checked_add(*back).expect("overflow");
+                    self.user_balances.insert(user_id.clone(), bal);
                 }
             }
         }
-        let Some(pool_id) = pool_id.filter(|_| ok) else {
+        if !ok {
             return self.fail_listing(&token_id, "prepare");
-        };
+        }
+        let token_is_x = token_id < self.wnear;
+        let pool_id = if token_is_x { format!("{}|{}|{}", token_id, self.wnear, DCL_FEE) } else { format!("{}|{}|{}", self.wnear, token_id, DCL_FEE) };
         let mut h = self.held.get(&token_id).cloned().expect("held");
         h.pool_id = Some(pool_id.clone());
         self.held.insert(token_id.clone(), h);
-        let token_is_x = token_id < self.wnear;
         let (amount_x, amount_y) = if token_is_x { (params.pool_amount, U128(0)) } else { (U128(0), params.pool_amount) };
+        // HotZap with an empty swap = deposit + add_liquidity in one ft_transfer_call. The plain
+        // "Deposit" message ran out of gas on testnet DCL for accounts like ours (any Tgas).
+        let msg = json!({ "HotZap": {
+            "swap_infos": [{ "pool_ids": [], "input_token": token_id, "output_token": token_id, "amount_in": "0", "min_output_amount": "0" }],
+            "add_liquidity_infos": [{
+                "pool_id": pool_id, "left_point": params.left_point, "right_point": params.right_point,
+                "amount_x": amount_x, "amount_y": amount_y, "min_amount_x": "0", "min_amount_y": "0",
+            }],
+        }})
+        .to_string();
         Promise::new(token_id.clone())
             .function_call(
                 "ft_transfer_call",
-                json!({ "receiver_id": self.dcl, "amount": params.pool_amount, "msg": "\"Deposit\"" }).to_string().into_bytes(),
+                json!({ "receiver_id": self.dcl, "amount": params.pool_amount, "msg": msg }).to_string().into_bytes(),
                 ONE_YOCTO,
                 GAS_FT_TRANSFER_CALL,
             )
-            .then(Promise::new(self.dcl.clone()).function_call(
-                "add_liquidity",
-                json!({
-                    "pool_id": pool_id,
-                    "left_point": params.left_point,
-                    "right_point": params.right_point,
-                    "amount_x": amount_x,
-                    "amount_y": amount_y,
-                    "min_amount_x": "0",
-                    "min_amount_y": "0",
-                })
-                .to_string()
-                .into_bytes(),
-                NearToken::from_yoctonear(0),
-                GAS_ADD_LIQUIDITY,
-            ))
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(GAS_ON_LIQUIDITY)
                     .with_unused_gas_weight(1)
-                    .on_liquidity_added(token_id),
+                    .on_zapped(token_id),
             )
     }
 
+    /// After the HotZap: `used` > 0 means liquidity was added; look the position up to hand it over.
     #[private]
-    pub fn on_liquidity_added(&mut self, token_id: AccountId, #[callback_result] lpt: Result<String, PromiseError>) -> Promise {
+    pub fn on_zapped(&mut self, token_id: AccountId, #[callback_result] used: Result<U128, PromiseError>) -> Promise {
+        match used {
+            Ok(u) if u.0 > 0 => Promise::new(self.dcl.clone())
+                .function_call(
+                    "list_liquidities",
+                    json!({ "account_id": env::current_account_id() }).to_string().into_bytes(),
+                    NearToken::from_yoctonear(0),
+                    GAS_VIEW_LIST,
+                )
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(GAS_ON_LIQUIDITY)
+                        .with_unused_gas_weight(1)
+                        .on_liquidity_added(token_id),
+                ),
+            _ => self.fail_listing(&token_id, "add_liquidity"),
+        }
+    }
+
+    #[private]
+    pub fn on_liquidity_added(&mut self, token_id: AccountId, #[callback_result] lpts: Result<Vec<near_sdk::serde_json::Value>, PromiseError>) -> Promise {
+        let mut h = self.held.get(&token_id).cloned().expect("held");
+        let pool = h.pool_id.clone().unwrap_or_default();
+        let lpt = lpts.ok().and_then(|v| {
+            v.into_iter()
+                .filter(|p| p.get("pool_id").and_then(|x| x.as_str()) == Some(pool.as_str()))
+                .filter_map(|p| p.get("lpt_id").and_then(|x| x.as_str()).map(str::to_string))
+                .last()
+        });
         match lpt {
-            Ok(lpt_id) => {
-                let mut h = self.held.get(&token_id).cloned().expect("held");
+            Some(lpt_id) => {
                 h.lpt_id = Some(lpt_id);
                 self.held.insert(token_id.clone(), h);
                 self.hand_off(&token_id, false)
             }
-            Err(_) => self.fail_listing(&token_id, "add_liquidity"),
+            None => self.fail_listing(&token_id, "find_position"),
         }
     }
 
@@ -527,6 +542,25 @@ impl LaunchVault {
         );
         require!(!h.listing || h.pool_id.is_some() || caller == self.owner_id, "listing in progress");
         self.hand_off(&token_id, true)
+    }
+
+    /// NEP-141 receiver: a creator sends their own Yeetpad token here with msg `list_on_rhea` to have
+    /// it listed (e.g. a launch made with "None", or a listing that failed). Anything else is refunded.
+    pub fn ft_on_transfer(&mut self, sender_id: AccountId, amount: U128, msg: String) -> U128 {
+        let token = env::predecessor_account_id();
+        let ours = token.as_str().strip_suffix(&format!(".{}", self.ft_factory)).filter(|t| !t.contains('.'));
+        let Some(ticker) = ours.filter(|_| msg == "list_on_rhea") else {
+            return amount;
+        };
+        match self.held.get(&token) {
+            Some(h) if h.creator != sender_id || h.listing => return amount,
+            Some(_) => {}
+            None => {
+                self.held.insert(token.clone(), Held { creator: sender_id.clone(), ticker: ticker.to_string(), pool_id: None, lpt_id: None, listing: false });
+            }
+        }
+        emit("hold", json!({ "account_id": sender_id, "token_id": token, "amount": amount }));
+        U128(0)
     }
 
     /// After `withdraw_asset` (success or not): hand the position and balance over.
@@ -843,7 +877,23 @@ fn default_wnear() -> AccountId {
 
 /// NEAR the creator pays for one listing (on top of the launch deposit).
 pub fn listing_cost(p: &ListParams) -> u128 {
-    p.pool_deposit.0 + p.creator_dcl_storage.0 + p.vault_dcl_topup.map(|v| v.0).unwrap_or(0) + 2 * TOKEN_STORAGE
+    prep_refunds(p).iter().sum::<u128>() + 2 * TOKEN_STORAGE
+}
+
+/// Deposit attached to each stage-A promise result, in result order (regs are not refunded).
+pub fn prep_refunds(p: &ListParams) -> Vec<u128> {
+    let mut v = vec![0];
+    if p.skip_create_pool != Some(true) {
+        v.push(p.pool_deposit.0);
+    }
+    if p.creator_dcl_storage.0 > 0 {
+        v.push(p.creator_dcl_storage.0);
+    }
+    let t = p.vault_dcl_topup.map(|v| v.0).unwrap_or(0);
+    if t > 0 {
+        v.push(t);
+    }
+    v
 }
 
 /// One-sided range checks. Token as X: the whole range sits above the price (only X in it).
@@ -904,7 +954,42 @@ mod tests {
             pool_deposit: U128(NearToken::from_millinear(20).as_yoctonear()),
             creator_dcl_storage: U128(NearToken::from_millinear(500).as_yoctonear()),
             vault_dcl_topup: None,
+            skip_create_pool: None,
         }
+    }
+
+    #[test]
+    fn relist_via_ft_on_transfer() {
+        let mut v = setup();
+        deposit(&mut v, "alice.near", 10);
+        ctx("moon.factory.near", NearToken::from_near(0));
+        assert_eq!(v.ft_on_transfer(acc("alice.near"), U128(5), "nope".into()).0, 5, "wrong msg refunded");
+        assert_eq!(v.ft_on_transfer(acc("alice.near"), U128(5), "list_on_rhea".into()).0, 0);
+        assert_eq!(v.get_held(acc("moon.factory.near")).unwrap().creator, acc("alice.near"));
+        assert_eq!(v.ft_on_transfer(acc("bob.near"), U128(5), "list_on_rhea".into()).0, 5, "other creator refunded");
+        ctx("evil.near", NearToken::from_near(0));
+        assert_eq!(v.ft_on_transfer(acc("alice.near"), U128(5), "list_on_rhea".into()).0, 5, "not our token");
+        ctx("relayer.near", NearToken::from_near(0));
+        let mut p = params();
+        p.skip_create_pool = Some(true);
+        let before = v.get_balance(acc("alice.near")).0;
+        let _ = v.list_on_rhea(acc("alice.near"), acc("moon.factory.near"), p.clone());
+        assert_eq!(before - v.get_balance(acc("alice.near")).0, p.creator_dcl_storage.0 + 2 * TOKEN_STORAGE);
+        assert_eq!(prep_refunds(&p).len(), 2);
+    }
+
+    #[test]
+    fn zap_failure_releases() {
+        let mut v = setup();
+        deposit(&mut v, "alice.near", 10);
+        let id = held_launch(&mut v);
+        ctx("relayer.near", NearToken::from_near(0));
+        let _ = v.list_on_rhea(acc("alice.near"), id.clone(), params());
+        with_results(vec![ok(b""), ok(b"\"p\""), ok(b"{}")]);
+        let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
+        with_results(vec![]);
+        let _ = v.on_zapped(id.clone(), Ok(U128(0)));
+        assert!(v.get_held(id).unwrap().listing, "hand-off pending until on_hand_off");
     }
 
     fn with_results(results: Vec<near_sdk::PromiseResult>) {
@@ -951,10 +1036,12 @@ mod tests {
         let pool = "moon.factory.near|wrap.near|10000".to_string();
         with_results(vec![ok(b""), ok(&near_sdk::serde_json::to_vec(&pool).unwrap()), ok(b"{}")]);
         let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
-        assert_eq!(v.get_held(id.clone()).unwrap().pool_id, Some(pool));
+        assert_eq!(v.get_held(id.clone()).unwrap().pool_id, Some(pool.clone()));
         with_results(vec![]);
-        let _ = v.on_liquidity_added(id.clone(), Ok("moon.factory.near|wrap.near|10000#7".into()));
-        assert!(v.get_held(id.clone()).unwrap().lpt_id.is_some());
+        let _ = v.on_zapped(id.clone(), Ok(U128(900)));
+        let lp = near_sdk::serde_json::json!([{ "lpt_id": "other|x#1", "pool_id": "other" }, { "lpt_id": format!("{pool}#7"), "pool_id": pool }]);
+        let _ = v.on_liquidity_added(id.clone(), Ok(lp.as_array().unwrap().clone()));
+        assert_eq!(v.get_held(id.clone()).unwrap().lpt_id, Some("moon.factory.near|wrap.near|10000#7".into()));
         with_results(vec![ok(b""), ok(b"\"100\"")]);
         let _ = v.on_hand_off(id.clone(), true);
         assert!(v.get_held(id).is_none(), "done listings are forgotten");
@@ -986,12 +1073,15 @@ mod tests {
         let _ = v.list_on_rhea(acc("alice.near"), id.clone(), params());
         with_results(vec![ok(b""), ok(b"\"p\""), ok(b"{}")]);
         let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
+        let pool = v.get_held(id.clone()).unwrap().pool_id.unwrap();
         with_results(vec![]);
-        let _ = v.on_liquidity_added(id.clone(), Ok("p#1".into()));
+        let lp = near_sdk::serde_json::json!([{ "lpt_id": "p#1", "pool_id": pool }]);
+        let _ = v.on_liquidity_added(id.clone(), Ok(lp.as_array().unwrap().clone()));
         with_results(vec![near_sdk::PromiseResult::Failed, ok(b"\"5\"")]);
         let _ = v.on_hand_off(id.clone(), true);
         let h = v.get_held(id.clone()).unwrap();
         assert_eq!(h.lpt_id.as_deref(), Some("p#1"));
+        assert!(!h.listing);
         ctx("alice.near", NearToken::from_near(0));
         let _ = v.release(id); // creator may retry
     }
