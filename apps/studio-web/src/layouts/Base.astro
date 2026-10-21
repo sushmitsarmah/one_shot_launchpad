@@ -6,11 +6,14 @@ interface Props {
   title: string;
   description?: string;
   page: "home" | "app" | "token";
+  /** Show the Yeetpad header/footer. Token sites are standalone, so they turn it off. */
+  chrome?: boolean;
 }
 const {
   title,
   description = "Yeetpad: type one prompt and yeet a real NEP-141 token (plus its landing site) onto NEAR. AI-powered token launchpad, on NEAR testnet.",
   page,
+  chrome = true,
 } = Astro.props;
 const SITE = "https://yeetpad.fun";
 const url = new URL(Astro.url.pathname, SITE).toString();
@@ -20,13 +23,13 @@ const url = new URL(Astro.url.pathname, SITE).toString();
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" id="favicon" href="/favicon.svg" type="image/svg+xml" />
     <title>{title}</title>
     <meta name="description" content={description} />
     <meta name="theme-color" content="#fff3dc" />
     <link rel="canonical" href={url} />
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Yeetpad" />
+    {chrome && <meta property="og:site_name" content="Yeetpad" />}
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={url} />
@@ -34,7 +37,7 @@ const url = new URL(Astro.url.pathname, SITE).toString();
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
-    <meta name="application-name" content="Yeetpad" />
+    {chrome && <meta name="application-name" content="Yeetpad" />}
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -43,9 +46,9 @@ const url = new URL(Astro.url.pathname, SITE).toString();
     />
   </head>
   <body class={`page-${page}`}>
-    <SiteHeader page={page} />
+    {chrome && <SiteHeader page={page} />}
     <slot />
-    <footer class="site-footer">
+    {chrome && (<footer class="site-footer">
       <div class="wrap footer-inner">
         <a class="brand small" href="/"><span class="brand-mark" aria-hidden="true">🚀</span> Yeetpad</a>
         <p>
@@ -58,6 +61,6 @@ const url = new URL(Astro.url.pathname, SITE).toString();
           <a href="https://github.com/sushmitsarmah/one_shot_launchpad" target="_blank" rel="noreferrer">GitHub ↗</a>
         </p>
       </div>
-    </footer>
+    </footer>)}
   </body>
 </html>

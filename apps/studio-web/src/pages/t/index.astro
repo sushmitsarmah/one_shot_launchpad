@@ -4,13 +4,13 @@
 import Base from "../../layouts/Base.astro";
 import "../../styles/token.css";
 ---
-<Base title="Token · Yeetpad" description="A token yeeted onto NEAR testnet with Yeetpad." page="token">
+<Base title="Token" description="A token on NEAR testnet." page="token" chrome={false}>
   <main class="tk-main" id="tk" data-state="loading">
-    <div class="tk-loading wrap"><span class="brand-mark" aria-hidden="true">🚀</span> Loading token…</div>
+    <div class="tk-loading wrap">Loading…</div>
     <div class="tk-missing wrap">
       <h1>No token here (yet)</h1>
       <p id="tk-missing-msg">We couldn't find that ticker.</p>
-      <a class="btn btn-pink" href="/app/">Yeet one →</a>
+      
     </div>
     <article class="tk-site">
       <section class="tk-hero">
@@ -47,7 +47,7 @@ import "../../styles/token.css";
           <div id="tk-swatches" class="tk-swatches"></div>
         </div>
       </section>
-      <p class="wrap tk-made">Made in one prompt with <a href="/">Yeetpad</a>. Testnet token, zero real value, pure vibes.</p>
+      <p class="wrap tk-made">Testnet token, zero real value. <a href="/">Launched with Yeetpad</a></p>
     </article>
   </main>
   <script>
@@ -68,7 +68,8 @@ import "../../styles/token.css";
           st.setProperty("--tk-primary", c.primary); st.setProperty("--tk-secondary", c.secondary);
           st.setProperty("--tk-accent", c.accent); st.setProperty("--tk-bg", c.background); st.setProperty("--tk-text", c.text);
           const sym = s.branding.ticker;
-          document.title = `${s.branding.name} ($${sym}) · Yeetpad`;
+          document.title = `${s.branding.name} ($${sym})`;
+          if (s.iconDataUri) $("favicon").setAttribute("href", s.iconDataUri);
           document.querySelector('meta[name="description"]')?.setAttribute("content", s.branding.tagline);
           $("tk-name").textContent = s.branding.name;
           $("tk-ticker").textContent = `$${sym}`;
