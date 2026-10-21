@@ -1,0 +1,19 @@
+# deps / builds
+node_modules/
+dist/
+.astro/
+target/
+*.wasm
+!contracts/**/res/.gitkeep
+
+# env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+**/near-credentials/
+
+# misc
+.DS_Store
+*.log
+.wrangler/
