@@ -32,7 +32,7 @@ Land → connect a NEAR wallet → deposit NEAR as NEAR AI credits → generate 
 ```
 apps/
   studio-web/          Astro (static): landing page at /, studio (React island) at /app/
-  orchestrator-api/    Bun + Hono API (also a Cloudflare Worker): /api/auth/session, /api/whitelist, /api/generate,
+  orchestrator-api/    Bun + Hono API (also a Cloudflare Worker): /api/auth/session, /api/whitelist, /api/admin/*, /api/generate,
                        /api/launch, /api/launch/batch, /api/site/:ticker, /api/launches/:account,
                        /api/balance/:account, /api/health
 packages/
@@ -164,33 +164,55 @@ Tests: `src/auth.test.ts` (signatures built with near-api-js's own NEP-413 signe
 
 ## Access gate (whitelist)
 
-The app is **locked** (`LOCKED=1`, the default). While locked:
+The app is **locked** (`LOCKED=1`, the default). The allowlist is the union of
+**KV `allow:<account>`** (`{approvedAt, approvedBy}`, written when an admin approves; no redeploy),
+**`ALLOWED_ACCOUNTS`** (env var, bootstrap/fallback, currently empty) and **`ADMIN_ACCOUNTS`** (env var; admins are implicitly allowed).
 
-* `POST /api/auth/session` verifies the signature as usual, then answers **403** `{ "error": "...", "code": "not_whitelisted" }` for any account not in `ALLOWED_ACCOUNTS` (checked after the signature, so the list can't be probed).
-* `POST /api/generate`, `/api/launch`, `/api/launch/batch` and `PUT /api/site/:id/settings` re-check the allowlist on every call, so sessions issued before the lock (or before an account was removed) get the same 403.
+* `POST /api/auth/session` verifies the signature as usual, then answers **403** `{ "error": "...", "code": "not_whitelisted" }` for any account not on the allowlist (checked after the signature, so the list can't be probed).
+* `POST /api/generate`, `/api/launch`, `/api/launch/batch` and `PUT /api/site/:id/settings` re-check the allowlist on every call, so sessions issued before the lock or before a revoke get the same 403.
+* KV `allow:` reads use `cacheTtl: 30` (the Workers KV minimum), so an approval or revoke takes effect within ~30 s (KV is eventually consistent; across distant regions it can take up to ~60 s).
 * Public reads keep working: `/api/health` (reports `locked`, never the list), `/api/site/:id`, `/api/launches/:account`, `/api/balance/:account`, and the token pages `/t/*`.
-* The web app reads `locked` from `/api/health`: the landing CTA is "Join the whitelist", `/app/` shows the whitelist form (with an "Already whitelisted? Connect your wallet" link), and a 403 `not_whitelisted` shows "You're not on the whitelist yet" plus the form.
+* `GET /api/auth/me` returns `{ accountId, isAdmin, whitelisted, locked }`.
+* Web: the landing CTA is "Join the whitelist"; `/app/` shows the whitelist form (with "Already whitelisted? Connect your wallet"); a 403 `not_whitelisted` shows "You're not on the whitelist yet" plus the form. To open the app to everyone, set `"LOCKED": "0"` in `apps/orchestrator-api/wrangler.jsonc` and `bun run deploy:api`.
 
-The allowlist lives in `apps/orchestrator-api/wrangler.jsonc` (`vars.ALLOWED_ACCOUNTS`, initially only the e2e account `osl-e2e-mvhxupmb.testnet`).
+### Admins
 
-**Add an account** (from the repo root, then commit the `wrangler.jsonc` change):
+**Make an account an admin** (from the repo root; then commit the `wrangler.jsonc` change):
 
 ```bash
-bun run allow you.testnet && bun run deploy:api
+bun run admin your-wallet.testnet && bun run deploy:api
 ```
 
-`bun run allow --remove you.testnet && bun run deploy:api` removes one, `bun run allow --list` prints the list. (`scripts/allow-account.ts` validates the id and edits the `ALLOWED_ACCOUNTS` var.) To open the app to everyone, set `"LOCKED": "0"` in the same file and `bun run deploy:api`.
+`bun run admin --list` shows admins, `bun run admin --remove x.testnet && bun run deploy:api` removes one. Admins are set by the `ADMIN_ACCOUNTS` var (currently `osl-e2e-mvhxupmb.testnet`), not KV, so a leaked admin session can't create more admins.
+
+**Day to day:** sign in at `/app/` with an admin wallet → an **🛡️ Admin** tab appears (hidden for everyone else; direct link `/app/#admin`). It lists waitlist requests with counts and Pending / Approved / Revoked / All filters, search, per-row **Approve** / **Revoke** / **Remove**, checkboxes with select-all and bulk actions, plus "Who's allowed in" (KV approvals, env and admin accounts) with a box to approve any account directly.
+
+* **Approve** writes `allow:<account>` and marks the request approved (works for accounts that never joined, too).
+* **Revoke** deletes `allow:<account>`; the request stays, marked revoked.
+* **Remove** revokes and deletes the request (`waitlist:<account>`).
+* Accounts in `ADMIN_ACCOUNTS` / `ALLOWED_ACCOUNTS` can't be revoked from the UI (the API says so); edit the var and redeploy.
+
+Admin API (session bearer token + admin, otherwise 401 / 403 `{ "code": "not_admin" }`):
+
+| endpoint | |
+|---|---|
+| `GET /api/admin/waitlist` | `{ entries: [{account, contact, joinedAt, status: pending\|approved\|revoked, approvedAt, approvedBy}], counts, truncated }`; follows KV list cursors (up to 20k) |
+| `GET /api/admin/allowed` | `{ allowed: [{account, source: admin\|env\|kv, approvedAt, approvedBy}], truncated }` |
+| `POST /api/admin/approve` | `{ accounts: [...] }` (1–100) → `{ results: [{account, ok, note?}] }` |
+| `POST /api/admin/revoke` | same body; deletes `allow:` keys, keeps the requests |
+| `POST /api/admin/remove` | same body; deletes `allow:` and `waitlist:` keys |
+
+CLI alternative (writes KV directly, no redeploy): `bun run allow you.testnet`, `bun run allow --remove you.testnet`, `bun run allow --list`.
 
 ### Waitlist signups
 
-`POST /api/whitelist` `{ "account": "<near id>", "contact"?: "<email or @handle, ≤100 chars>" }` (body ≤ 1 KiB) stores `waitlist:<account>` → `{account, contact, createdAt, updatedAt}` in the `SITES` KV namespace (`yeetpad-sites`). It is idempotent (`already: true` on repeats; the first `createdAt` is kept, a new contact updates the entry) and soft rate-limited to 10 signups per IP per hour (IPv6 counted per /64; `wlrl:<ip>:<window>` keys with a TTL). There is no listing endpoint; read the list with wrangler (from `apps/orchestrator-api`):
+`POST /api/whitelist` `{ "account": "<near id>", "contact"?: "<email or @handle, ≤100 chars>" }` (body ≤ 1 KiB) stores `waitlist:<account>` → `{account, contact, createdAt, updatedAt, status}` in the `SITES` KV namespace (`yeetpad-sites`), also as KV metadata so the admin list needs no per-key reads. It is idempotent (`already: true` on repeats; the first `createdAt` is kept, a new contact updates the entry) and soft rate-limited to 10 signups per IP per hour (IPv6 counted per /64; `wlrl:<ip>:<window>` keys with a TTL). There is no public listing; admins use the Admin tab, or wrangler (from `apps/orchestrator-api`):
 
 ```bash
 npx wrangler kv key list --binding SITES --remote --prefix waitlist:
-npx wrangler kv key get --binding SITES --remote "waitlist:someone.testnet"
 ```
 
-Tests: `src/gate.test.ts` (allowlist + lock parsing, 403 on session and on every spend/launch/settings endpoint for old sessions, public reads, waitlist validation, idempotency, size and rate limits).
+Tests: `src/gate.test.ts` (lock/allowlist/admin parsing, KV approvals, 403 on session and on every spend/launch/settings endpoint for old or revoked sessions, admin-only endpoints, approve → 200 → revoke → 403, remove, KV list pagination, waitlist validation, idempotency, size and rate limits).
 
 ## NEAR AI
 

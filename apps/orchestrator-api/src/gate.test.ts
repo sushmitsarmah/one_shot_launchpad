@@ -2,11 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { KeyPair } from "near-api-js";
 import { NOT_WHITELISTED, WaitlistRequest } from "@osl/schema";
 import { signIn } from "./test-helpers";
-import { addToWaitlist, ipBucket, isAllowed, takeRateLimit, waitlistKey, WAITLIST_RATE_LIMIT } from "./gate";
-import { kvStore, type KVLike } from "./sites";
+import { NOT_ADMIN } from "@osl/schema";
+import { addToWaitlist, allowKey, approveAccounts, ipBucket, isAllowed, listAll, listWaitlist, takeRateLimit, waitlistKey, WAITLIST_RATE_LIMIT } from "./gate";
+import { MemoryKV, kvStore, type KVLike } from "./sites";
 
 const RECIPIENT = "launch-vault.gate.testnet";
 const ALLOWED = "osl-e2e-mvhxupmb.testnet";
+const ADMIN = "boss.testnet";
 let app: typeof import("./app").app;
 let configureFromEnv: typeof import("./config").configureFromEnv;
 
@@ -20,6 +22,7 @@ beforeAll(async () => {
     VAULT_CONTRACT: RECIPIENT,
     LOCKED: "1",
     ALLOWED_ACCOUNTS: ` ${ALLOWED} , Second.testnet `,
+    ADMIN_ACCOUNTS: ADMIN,
   });
 });
 afterAll(() => configureFromEnv({ LOCKED: "0" }));
@@ -40,16 +43,20 @@ async function sessionFor(account: string) {
 }
 
 describe("isAllowed", () => {
-  const cfg = { locked: true, allowedAccounts: ["a.testnet", "b.testnet"] };
-  test("locked: only allowlisted", () => {
-    expect(isAllowed("a.testnet", cfg)).toBe(true);
-    expect(isAllowed("A.testnet ", cfg)).toBe(true);
-    expect(isAllowed("c.testnet", cfg)).toBe(false);
-    expect(isAllowed("a.testnet.evil", cfg)).toBe(false);
-    expect(isAllowed("a.testnet", { locked: true, allowedAccounts: [] })).toBe(false);
+  const cfg = { locked: true, allowedAccounts: ["a.testnet", "b.testnet"], adminAccounts: ["root.testnet"] };
+  test("locked: env allowlist, admins and KV approvals", async () => {
+    const kv = new MemoryKV();
+    await kv.put(allowKey("k.testnet"), "{}");
+    expect(await isAllowed("a.testnet", cfg, kv)).toBe(true);
+    expect(await isAllowed("A.testnet ", cfg, kv)).toBe(true);
+    expect(await isAllowed("root.testnet", cfg, kv)).toBe(true);
+    expect(await isAllowed("k.testnet", cfg, kv)).toBe(true);
+    expect(await isAllowed("c.testnet", cfg, kv)).toBe(false);
+    expect(await isAllowed("a.testnet.evil", cfg, kv)).toBe(false);
+    expect(await isAllowed("a.testnet", { locked: true, allowedAccounts: [] }, kv)).toBe(false);
   });
-  test("unlocked: everyone", () => {
-    expect(isAllowed("c.testnet", { ...cfg, locked: false })).toBe(true);
+  test("unlocked: everyone", async () => {
+    expect(await isAllowed("c.testnet", { ...cfg, locked: false }, new MemoryKV())).toBe(true);
   });
 });
 
@@ -101,7 +108,7 @@ describe("gate (locked)", () => {
     const s = await sessionFor("old-user.testnet");
     expect(s.status).toBe(200);
     const { token } = await s.json();
-    configureFromEnv({ SESSION_SECRET: "gate-secret", VAULT_CONTRACT: RECIPIENT, NEAR_MOCK: "1", LLM_MOCK: "1", LOCKED: "1", ALLOWED_ACCOUNTS: ALLOWED });
+    configureFromEnv({ SESSION_SECRET: "gate-secret", VAULT_CONTRACT: RECIPIENT, NEAR_MOCK: "1", LLM_MOCK: "1", LOCKED: "1", ALLOWED_ACCOUNTS: ALLOWED, ADMIN_ACCOUNTS: ADMIN });
 
     const idea = { name: "Old Duck", ticker: "oldduck", tagline: "t", description: "d", colors: { primary: "#111111", secondary: "#222222", accent: "#333333", background: "#ffffff", text: "#000000" } };
     const cases: [string, string, unknown][] = [
@@ -196,7 +203,7 @@ describe("waitlist store helpers", () => {
     expect(a.already).toBe(false);
     const b = await addToWaitlist(kv, { account: "x.testnet", contact: "x@y.io" }, 2000);
     expect(b.already).toBe(true);
-    expect(b.entry).toEqual({ account: "x.testnet", contact: "x@y.io", createdAt: 1000, updatedAt: 2000 });
+    expect(b.entry).toEqual({ account: "x.testnet", contact: "x@y.io", createdAt: 1000, updatedAt: 2000, status: "pending" });
   });
   test("IPv6 is bucketed by /64", () => {
     expect(ipBucket("1.2.3.4")).toBe("1.2.3.4");
@@ -210,5 +217,103 @@ describe("waitlist store helpers", () => {
     expect(await takeRateLimit(kv, "ip", 0, 1, 60)).toBe(true);
     expect(await takeRateLimit(kv, "ip", 1000, 1, 60)).toBe(false);
     expect(await takeRateLimit(kv, "ip", 61_000, 1, 60)).toBe(true);
+  });
+});
+
+describe("KV list pagination", () => {
+  test("listAll follows cursors", async () => {
+    const kv = new MemoryKV();
+    for (let i = 0; i < 2500; i++) await kv.put(`waitlist:p${String(i).padStart(4, "0")}.testnet`, "{}");
+    await kv.put("other:x", "{}");
+    const r = await listAll(kv, "waitlist:");
+    expect(r.keys.length).toBe(2500);
+    expect(r.truncated).toBe(false);
+    expect((await listAll(kv, "waitlist:", 2)).truncated).toBe(true);
+  });
+  test("listWaitlist falls back to reads for entries without metadata", async () => {
+    const kv = new MemoryKV();
+    await kv.put(waitlistKey("old.testnet"), JSON.stringify({ account: "old.testnet", contact: null, createdAt: 5, updatedAt: 5 }));
+    await addToWaitlist(kv, { account: "new.testnet", contact: "@n" }, 10);
+    await approveAccounts(kv, ["old.testnet"], "boss.testnet", 20);
+    const { entries } = await listWaitlist(kv, { locked: true, allowedAccounts: [] });
+    expect(entries.map((e) => [e.account, e.status])).toEqual([["new.testnet", "pending"], ["old.testnet", "approved"]]);
+    expect(entries[1].approvedBy).toBe("boss.testnet");
+  });
+});
+
+describe("admin API", () => {
+  const authed = async (account: string) => (await (await sessionFor(account)).json()).token as string;
+  const get = (path: string, token?: string) => app.request(path, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+
+  test("/api/auth/me reports isAdmin + whitelisted", async () => {
+    const admin = await (await get("/api/auth/me", await authed(ADMIN))).json();
+    expect(admin).toEqual({ accountId: ADMIN, isAdmin: true, whitelisted: true, locked: true });
+    const user = await (await get("/api/auth/me", await authed(ALLOWED))).json();
+    expect(user.isAdmin).toBe(false);
+    expect(user.whitelisted).toBe(true);
+  });
+
+  test("non-admins get 403 not_admin, no session 401", async () => {
+    const token = await authed(ALLOWED);
+    for (const [m, p] of [["GET", "/api/admin/waitlist"], ["GET", "/api/admin/allowed"], ["POST", "/api/admin/approve"], ["POST", "/api/admin/revoke"], ["POST", "/api/admin/remove"]]) {
+      const r = await json(p, { accounts: ["x.testnet"] }, { method: m, token });
+      expect(r.status).toBe(403);
+      expect((await r.json()).code).toBe(NOT_ADMIN);
+      expect((await json(p, { accounts: ["x.testnet"] }, { method: m })).status).toBe(401);
+    }
+  });
+
+  test("approve -> session works; revoke -> 403 again (incl. existing session); remove deletes the request", async () => {
+    const admin = await authed(ADMIN);
+    const who = "gate-flow.testnet";
+    await json("/api/whitelist", { account: who, contact: "@flow" }, { ip: "5.5.5.5" });
+    await json("/api/whitelist", { account: "gate-other.testnet" }, { ip: "5.5.5.5" });
+    expect((await sessionFor(who)).status).toBe(403);
+
+    let list = await (await get("/api/admin/waitlist", admin)).json();
+    expect(list.entries.find((e: any) => e.account === who)).toMatchObject({ status: "pending", contact: "@flow" });
+
+    const ap = await (await json("/api/admin/approve", { accounts: [who] }, { token: admin })).json();
+    expect(ap.results).toEqual([{ account: who, ok: true }]);
+    const s = await sessionFor(who);
+    expect(s.status).toBe(200);
+    const userToken = (await s.json()).token;
+    list = await (await get("/api/admin/waitlist", admin)).json();
+    expect(list.entries.find((e: any) => e.account === who)).toMatchObject({ status: "approved", approvedBy: ADMIN });
+    expect(list.counts.approved).toBeGreaterThanOrEqual(1);
+    const allowed = await (await get("/api/admin/allowed", admin)).json();
+    expect(allowed.allowed.map((a: any) => [a.account, a.source])).toContainEqual([who, "kv"]);
+    expect(allowed.allowed.map((a: any) => [a.account, a.source])).toContainEqual([ADMIN, "admin"]);
+
+    await json("/api/admin/revoke", { accounts: [who] }, { token: admin });
+    expect((await sessionFor(who)).status).toBe(403);
+    const g = await json("/api/generate", { prompt: "revoked user", ownerWallet: who }, { token: userToken });
+    expect(g.status).toBe(403);
+    list = await (await get("/api/admin/waitlist", admin)).json();
+    expect(list.entries.find((e: any) => e.account === who).status).toBe("revoked");
+
+    await json("/api/admin/approve", { accounts: [who] }, { token: admin });
+    const rm = await (await json("/api/admin/remove", { accounts: [who] }, { token: admin })).json();
+    expect(rm.results[0].ok).toBe(true);
+    expect(await kvStore().get(waitlistKey(who))).toBeNull();
+    expect(await kvStore().get(allowKey(who))).toBeNull();
+    expect((await sessionFor(who)).status).toBe(403);
+  });
+
+  test("approving an account that never joined still works; env accounts can't be revoked via KV", async () => {
+    const admin = await authed(ADMIN);
+    const r = await (await json("/api/admin/approve", { accounts: ["Walk-In.testnet"] }, { token: admin })).json();
+    expect(r.results[0]).toMatchObject({ account: "walk-in.testnet", ok: true });
+    expect((await sessionFor("walk-in.testnet")).status).toBe(200);
+    const rv = await (await json("/api/admin/revoke", { accounts: [ALLOWED, ADMIN] }, { token: admin })).json();
+    expect(rv.results.map((x: any) => x.ok)).toEqual([false, false]);
+    expect((await sessionFor(ALLOWED)).status).toBe(200);
+  });
+
+  test("bad admin bodies are 400", async () => {
+    const admin = await authed(ADMIN);
+    expect((await json("/api/admin/approve", { accounts: [] }, { token: admin })).status).toBe(400);
+    expect((await json("/api/admin/approve", { accounts: ["no way"] }, { token: admin })).status).toBe(400);
+    expect((await json("/api/admin/approve", { accounts: Array.from({ length: 101 }, (_, i) => `a${i}.testnet`) }, { token: admin })).status).toBe(400);
   });
 });

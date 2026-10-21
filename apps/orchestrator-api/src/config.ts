@@ -6,6 +6,12 @@
  */
 export type EnvSource = Record<string, unknown>;
 
+const list = (v: string | undefined) =>
+  (v ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
 export function buildConfig(src: EnvSource = {}) {
   const env = (k: string, d?: string): string | undefined => {
     const v = src[k];
@@ -46,13 +52,13 @@ export function buildConfig(src: EnvSource = {}) {
     sessionSecret: env("SESSION_SECRET"),
     authRecipient: env("AUTH_RECIPIENT", env("VAULT_CONTRACT", "launch-vault.testnet")) as string,
 
-    // Access gate. LOCKED defaults ON: only ALLOWED_ACCOUNTS (comma-separated NEAR ids) may sign in or
-    // spend/launch. Set LOCKED=0 to open the app to everyone.
+    // Access gate. LOCKED defaults ON: only allowlisted accounts may sign in or spend/launch. The allowlist is
+    // KV `allow:<account>` (approved by admins) ∪ ALLOWED_ACCOUNTS (bootstrap var) ∪ ADMIN_ACCOUNTS.
+    // Set LOCKED=0 to open the app to everyone.
     locked: !["0", "false", "no", "off"].includes((env("LOCKED", "1") as string).toLowerCase()),
-    allowedAccounts: (env("ALLOWED_ACCOUNTS", "") as string)
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
+    allowedAccounts: list(env("ALLOWED_ACCOUNTS", "")),
+    /** Can use /api/admin/* (approve/revoke/remove waitlist requests). Implicitly allowlisted. */
+    adminAccounts: list(env("ADMIN_ACCOUNTS", "")),
   };
 }
 

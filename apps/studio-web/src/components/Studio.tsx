@@ -3,9 +3,10 @@ import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type Launch
 import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, signOut } from "../lib/wallet";
 import { getVaultBalance } from "../lib/near";
-import { appLocked, generate, launchBatch, myLaunches, saveSiteSettings, UnauthorizedError } from "../lib/api";
+import { appLocked, generate, launchBatch, me, myLaunches, saveSiteSettings, UnauthorizedError } from "../lib/api";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { WaitlistForm } from "./WaitlistForm";
+import Admin from "./Admin";
 import { VAULT_CONTRACT } from "../lib/config";
 
 type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings";
@@ -28,6 +29,24 @@ export default function Studio() {
   const [locked, setLocked] = useState<boolean | null>(null);
   const [notWhitelisted, setNotWhitelisted] = useState(false);
   const [showConnect, setShowConnect] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [tab, setTab] = useState<"studio" | "admin">(() => (typeof location !== "undefined" && location.hash === "#admin" ? "admin" : "studio"));
+  const openTab = (t: "studio" | "admin") => {
+    setTab(t);
+    history.replaceState(null, "", t === "admin" ? "#admin" : location.pathname + location.search);
+  };
+
+  // The Admin tab only exists for ADMIN_ACCOUNTS (the API enforces it too).
+  useEffect(() => {
+    if (!session) return setIsAdmin(false);
+    let live = true;
+    me(session.token)
+      .then((r) => live && setIsAdmin(r.isAdmin))
+      .catch(() => live && setIsAdmin(false));
+    return () => {
+      live = false;
+    };
+  }, [session?.token]);
 
   useEffect(() => {
     appLocked().then(setLocked);
@@ -116,6 +135,17 @@ export default function Studio() {
 
   const connect = async () => (await initWallet()).modal.show();
 
+  const adminToken = useCallback(async () => {
+    if (!account) return null;
+    const s = getSession(account) ?? (await ensureSession(account));
+    setSession(s);
+    return s?.token ?? null;
+  }, [account]);
+  const onAdminError = useCallback((e: Error) => {
+    if (e instanceof UnauthorizedError) setSession(null);
+    if (e instanceof NotWhitelistedError) setNotWhitelisted(true);
+  }, []);
+
   const isLocked = locked !== false;
 
   // Signed in (or tried to) with an account that isn't on the allowlist.
@@ -186,7 +216,25 @@ export default function Studio() {
     );
   }
 
+  const tabs = isAdmin && (
+    <nav className="studio-tabs" role="tablist" aria-label="Studio sections">
+      <button role="tab" aria-selected={tab === "studio"} onClick={() => openTab("studio")}>🏭 Studio</button>
+      <button role="tab" aria-selected={tab === "admin"} onClick={() => openTab("admin")}>🛡️ Admin</button>
+    </nav>
+  );
+
+  if (isAdmin && tab === "admin") {
+    return (
+      <>
+        {tabs}
+        <Admin getToken={adminToken} onAuthError={onAdminError} />
+      </>
+    );
+  }
+
   return (
+    <>
+    {tabs}
     <div className="dash">
       <aside className="dash-side">
       <section className="card s-wallet">
@@ -405,6 +453,7 @@ export default function Studio() {
       {error && <p className="error">{error}</p>}
       </div>
     </div>
+    </>
   );
 }
 

@@ -14,7 +14,9 @@ import {
   NearAccountId,
   SiteConfig,
   WaitlistRequest,
+  AdminAccountsRequest,
   formatNear,
+  type MeResponse,
   type WaitlistResponse,
   type GenerateResponse,
   type LaunchResponse,
@@ -23,7 +25,20 @@ import { config } from "./config";
 import { generateIdeas } from "./llm";
 import { tokenIconDataUri } from "./icon";
 import { buildSiteConfig, compactSite, findSite, getSite, getViews, kvStore, putSite, saveSite, siteStoreKind, siteUrl } from "./sites";
-import { WAITLIST_MAX_BODY, addToWaitlist, assertAllowed, takeRateLimit } from "./gate";
+import {
+  WAITLIST_MAX_BODY,
+  addToWaitlist,
+  approveAccounts,
+  assertAdmin,
+  assertAllowed,
+  isAdmin,
+  isWhitelisted,
+  listAllowed,
+  listWaitlist,
+  removeAccounts,
+  revokeAccounts,
+  takeRateLimit,
+} from "./gate";
 import { AuthError, consumeNonceInMemory, issueSession, verifySession, verifySignIn } from "./auth";
 import {
   deductAiCompute,
@@ -109,7 +124,7 @@ app.post("/api/auth/session", async (c) => {
     consumeNonce: (n, exp) => consumeNonceInMemory(n, exp),
   });
   // Checked after the signature, so the allowlist can't be probed without the account's key.
-  assertAllowed(accountId, config);
+  await assertAllowed(accountId, config, kvStore());
   return c.json(await issueSession(accountId, sessionSecret()));
 });
 
@@ -123,11 +138,25 @@ const requireSession = createMiddleware<Env>(async (c, next) => {
 
 /** While locked, only allowlisted accounts pass (rejects older sessions of non-allowlisted accounts). */
 const requireAllowed = createMiddleware<Env>(async (c, next) => {
-  assertAllowed(c.var.account, config);
+  await assertAllowed(c.var.account, config, kvStore());
   await next();
 });
 
-app.get("/api/auth/me", requireSession, (c) => c.json({ accountId: c.var.account }));
+/** Admins only (ADMIN_ACCOUNTS); 403 `not_admin` otherwise. */
+const requireAdmin = createMiddleware<Env>(async (c, next) => {
+  assertAdmin(c.var.account, config);
+  await next();
+});
+
+app.get("/api/auth/me", requireSession, async (c) => {
+  const res: MeResponse = {
+    accountId: c.var.account,
+    isAdmin: isAdmin(c.var.account, config),
+    whitelisted: await isWhitelisted(c.var.account, config, kvStore()),
+    locked: config.locked,
+  };
+  return c.json(res);
+});
 
 function ownerFor(c: { var: { account: string } }, claimed?: string) {
   if (claimed && claimed !== c.var.account) throw new AuthError(`ownerWallet ${claimed} does not match the signed-in account`, 403);
@@ -259,6 +288,43 @@ app.post("/api/whitelist", async (c) => {
   const { already } = await addToWaitlist(kvStore(), body.data);
   const res: WaitlistResponse = { ok: true, account: body.data.account, already };
   return c.json(res);
+});
+
+// ---------- admin (session + ADMIN_ACCOUNTS) ----------
+app.use("/api/admin/*", requireSession, requireAdmin);
+
+/** Waitlist requests with effective status (approved = on the allowlist now). Follows KV list cursors. */
+app.get("/api/admin/waitlist", async (c) => {
+  const { entries, truncated } = await listWaitlist(kvStore(), config);
+  const counts = { total: entries.length, pending: 0, approved: 0, revoked: 0 };
+  for (const e of entries) counts[e.status]++;
+  return c.json({ entries, counts, truncated });
+});
+
+/** Everyone who can get in: admins, ALLOWED_ACCOUNTS and KV approvals. */
+app.get("/api/admin/allowed", async (c) => c.json(await listAllowed(kvStore(), config)));
+
+const adminBody = async (c: { req: { json(): Promise<unknown> } }) => AdminAccountsRequest.safeParse(await c.req.json().catch(() => null));
+
+/** Bulk approve: writes allow:<account> {approvedAt, approvedBy}; takes effect within ~30 s. */
+app.post("/api/admin/approve", async (c) => {
+  const body = await adminBody(c);
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
+  return c.json({ results: await approveAccounts(kvStore(), body.data.accounts, c.var.account) });
+});
+
+/** Bulk revoke: deletes allow:<account>, keeps the waitlist request (status revoked). */
+app.post("/api/admin/revoke", async (c) => {
+  const body = await adminBody(c);
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
+  return c.json({ results: await revokeAccounts(kvStore(), body.data.accounts, config) });
+});
+
+/** Bulk remove: revokes access and deletes the waitlist request. */
+app.post("/api/admin/remove", async (c) => {
+  const body = await adminBody(c);
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
+  return c.json({ results: await removeAccounts(kvStore(), body.data.accounts, config) });
 });
 
 // ---------- token sites (public) ----------

@@ -13,6 +13,7 @@
     "dev:api:worker": "cd apps/orchestrator-api && npx -y wrangler@4.86.0 dev",
     "deploy:api": "cd apps/orchestrator-api && npx -y wrangler@4.86.0 deploy",
     "allow": "bun scripts/allow-account.ts",
+    "admin": "bun scripts/admin-account.ts",
     "build:web": "cd apps/studio-web && bun run build",
     "contracts:build": "bash contracts/build-contracts.sh",
     "contracts:test": "cargo test --workspace && cd contracts/integration-tests && cargo test",

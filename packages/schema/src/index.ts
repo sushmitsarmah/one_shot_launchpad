@@ -242,3 +242,38 @@ export const WaitlistRequest = z.object({
 export type WaitlistRequest = z.infer<typeof WaitlistRequest>;
 export const WaitlistResponse = z.object({ ok: z.literal(true), account: z.string(), already: z.boolean() });
 export type WaitlistResponse = z.infer<typeof WaitlistResponse>;
+
+// ---------- admin ----------
+export const NOT_ADMIN = "not_admin";
+export const ADMIN_BATCH_MAX = 100;
+/** Body of POST /api/admin/{approve,revoke,remove}. */
+export const AdminAccountsRequest = z.object({
+  accounts: z.array(z.string().trim().toLowerCase().pipe(NearAccountId)).min(1).max(ADMIN_BATCH_MAX),
+});
+export type AdminAccountsRequest = z.infer<typeof AdminAccountsRequest>;
+export type WaitlistStatus = "pending" | "approved" | "revoked";
+export interface AdminWaitlistItem {
+  account: string;
+  contact: string | null;
+  joinedAt: number;
+  status: WaitlistStatus;
+  approvedAt: number | null;
+  approvedBy: string | null;
+}
+export interface AdminAllowedItem {
+  account: string;
+  source: "admin" | "env" | "kv";
+  approvedAt: number | null;
+  approvedBy: string | null;
+}
+export interface AdminResult {
+  account: string;
+  ok: boolean;
+  note?: string;
+}
+export interface MeResponse {
+  accountId: string;
+  isAdmin: boolean;
+  whitelisted: boolean;
+  locked: boolean;
+}

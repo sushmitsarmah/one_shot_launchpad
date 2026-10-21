@@ -6,14 +6,21 @@
 import { SiteConfig, slugify, type LaunchIdea } from "@osl/schema";
 import { config } from "./config";
 
+export interface KVListResult {
+  keys: { name: string; metadata?: unknown }[];
+  list_complete: boolean;
+  cursor?: string;
+}
 export interface KVLike {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>;
+  get(key: string, opts?: { cacheTtl?: number }): Promise<string | null>;
+  put(key: string, value: string, opts?: { expirationTtl?: number; metadata?: unknown }): Promise<void>;
   delete?(key: string): Promise<void>;
+  list?(opts: { prefix?: string; cursor?: string; limit?: number }): Promise<KVListResult>;
 }
 
-class MemoryKV implements KVLike {
+export class MemoryKV implements KVLike {
   private m = new Map<string, string>();
+  private meta = new Map<string, unknown>();
   private exp = new Map<string, number>();
   async get(k: string) {
     const e = this.exp.get(k);
@@ -23,14 +30,33 @@ class MemoryKV implements KVLike {
     }
     return this.m.get(k) ?? null;
   }
-  async put(k: string, v: string, opts?: { expirationTtl?: number }) {
+  async put(k: string, v: string, opts?: { expirationTtl?: number; metadata?: unknown }) {
     this.m.set(k, v);
+    if (opts?.metadata !== undefined) this.meta.set(k, opts.metadata);
+    else this.meta.delete(k);
     if (opts?.expirationTtl) this.exp.set(k, Date.now() + opts.expirationTtl * 1000);
     else this.exp.delete(k);
   }
   async delete(k: string) {
     this.m.delete(k);
+    this.meta.delete(k);
     this.exp.delete(k);
+  }
+  /** Same shape as Workers KV list(): sorted names, `limit` per page (default 1000), opaque cursor. */
+  async list(opts: { prefix?: string; cursor?: string; limit?: number }) {
+    const now = Date.now();
+    const names = [...this.m.keys()]
+      .filter((k) => k.startsWith(opts.prefix ?? "") && !((this.exp.get(k) ?? Infinity) <= now))
+      .sort();
+    const start = opts.cursor ? Number(opts.cursor) : 0;
+    const limit = opts.limit ?? 1000;
+    const page = names.slice(start, start + limit);
+    const done = start + limit >= names.length;
+    return {
+      keys: page.map((name) => ({ name, ...(this.meta.has(name) ? { metadata: this.meta.get(name) } : {}) })),
+      list_complete: done,
+      ...(done ? {} : { cursor: String(start + limit) }),
+    };
   }
 }
 

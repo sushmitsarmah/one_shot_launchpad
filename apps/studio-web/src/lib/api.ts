@@ -1,4 +1,15 @@
-import type { BatchLaunchResponse, GenerateResponse, LaunchedToken, LaunchIdea, LaunchResponse, SiteConfig } from "@osl/schema";
+import type {
+  AdminAllowedItem,
+  AdminResult,
+  AdminWaitlistItem,
+  BatchLaunchResponse,
+  GenerateResponse,
+  LaunchedToken,
+  LaunchIdea,
+  LaunchResponse,
+  MeResponse,
+  SiteConfig,
+} from "@osl/schema";
 import { API_URL } from "./config";
 import { NotWhitelistedError, clearSession, isNotWhitelisted } from "./auth";
 
@@ -72,3 +83,25 @@ export async function appLocked(): Promise<boolean> {
   }
 }
 
+
+async function authed<T>(method: "GET" | "POST", path: string, token: string, body?: unknown): Promise<T> {
+  const r = await fetch(`${API_URL}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const j = await r.json().catch(() => ({}));
+  check(r, j);
+  return j as T;
+}
+
+/** Who am I (session account, admin flag, allowlist status). */
+export const me = (token: string) => authed<MeResponse>("GET", "/api/auth/me", token);
+
+// ---------- admin (ADMIN_ACCOUNTS only; others get 403 not_admin) ----------
+export type WaitlistCounts = { total: number; pending: number; approved: number; revoked: number };
+export const adminWaitlist = (token: string) =>
+  authed<{ entries: AdminWaitlistItem[]; counts: WaitlistCounts; truncated: boolean }>("GET", "/api/admin/waitlist", token);
+export const adminAllowed = (token: string) => authed<{ allowed: AdminAllowedItem[]; truncated: boolean }>("GET", "/api/admin/allowed", token);
+export const adminAction = (action: "approve" | "revoke" | "remove", accounts: string[], token: string) =>
+  authed<{ results: AdminResult[] }>("POST", `/api/admin/${action}`, token, { accounts });
