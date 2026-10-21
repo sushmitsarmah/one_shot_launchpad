@@ -15,7 +15,9 @@
     "contracts:test": "cargo test --workspace && cd contracts/integration-tests && cargo test",
     "deploy:factory": "bun --cwd scripts run deploy:factory",
     "deploy:vault": "bun --cwd scripts run deploy:vault",
-    "typecheck": "bun --cwd packages/schema x tsc --noEmit && bun --cwd apps/orchestrator-api x tsc --noEmit",
-    "deploy:all": "bun --cwd scripts run deploy:all"
+    "typecheck": "cd apps/orchestrator-api && bun x tsc --noEmit && cd ../studio-web && bun x tsc --noEmit && cd ../../scripts && ../apps/orchestrator-api/node_modules/.bin/tsc --noEmit",
+    "deploy:all": "bun --cwd scripts run deploy:all",
+    "test:api": "bun --cwd apps/orchestrator-api test",
+    "test": "bun run test:api && bun run contracts:test"
   }
 }
