@@ -1,0 +1,15 @@
+[package]
+name = "near-launch-vault"
+description = "Credit vault for NEAR AI compute + sponsored token launches"
+edition.workspace = true
+version.workspace = true
+repository = "https://github.com/monolithlabs/one_shot_launchpad"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
