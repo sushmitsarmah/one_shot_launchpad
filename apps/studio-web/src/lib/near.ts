@@ -1,0 +1,27 @@
+import { RPC_URL, VAULT_CONTRACT } from "./config";
+
+/** Plain JSON-RPC view call (no wallet needed). */
+export async function viewCall<T>(contractId: string, method: string, args: object = {}): Promise<T> {
+  const res = await fetch(RPC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "osl",
+      method: "query",
+      params: {
+        request_type: "call_function",
+        finality: "optimistic",
+        account_id: contractId,
+        method_name: method,
+        args_base64: btoa(JSON.stringify(args)),
+      },
+    }),
+  });
+  const j = await res.json();
+  if (j.error || j.result?.error) throw new Error(j.error?.data ?? j.error?.message ?? j.result.error);
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
+}
+
+export const getVaultBalance = (accountId: string) =>
+  viewCall<string>(VAULT_CONTRACT, "get_balance", { account_id: accountId });

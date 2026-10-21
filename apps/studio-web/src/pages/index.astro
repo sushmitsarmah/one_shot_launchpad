@@ -1,0 +1,24 @@
+---
+import Studio from "../components/Studio.tsx";
+import "../styles/global.css";
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>One Shot Launchpad · NEAR testnet</title>
+    <meta name="description" content="Connect a NEAR wallet, top up AI credits, generate a token idea and launch it in one shot." />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>One Shot Launchpad</h1>
+        <p class="muted">Prompt → idea → NEP-141 token on NEAR testnet. Powered by NEAR AI.</p>
+      </header>
+      <Studio client:only="react" />
+      <footer class="muted small">Testnet only · nothing here is financial advice.</footer>
+    </main>
+  </body>
+</html>
