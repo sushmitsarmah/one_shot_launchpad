@@ -1,10 +1,16 @@
 {
   // Cloudflare Workers Builds: serves the static Astro site from apps/studio-web/dist.
   // Build command: bun install && bun run build:web    Deploy command: npx wrangler deploy
+  // Only /t/* runs the Worker (per-token <head> tags for link previews); everything else is static.
   "name": "one-shot-launchpad",
-  "compatibility_date": "2026-10-01",
+  "main": "./apps/studio-web/worker/index.ts",
+  "compatibility_date": "2026-05-01",
   "assets": {
     "directory": "./apps/studio-web/dist",
-    "not_found_handling": "404-page"
-  }
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/t/*"]
+  },
+  // Token site configs written by the API Worker (namespace yeetpad-sites); read-only here.
+  "kv_namespaces": [{ "binding": "SITES", "id": "39411e131b9049f3b4731d475866e58a" }]
 }
