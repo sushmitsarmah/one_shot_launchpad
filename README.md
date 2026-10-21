@@ -26,8 +26,9 @@ Land → connect a NEAR wallet → deposit NEAR as NEAR AI credits → generate 
 
 ```
 apps/
-  studio-web/          Astro (static) + React island: wallet connect, top-up, generate, launch
-  orchestrator-api/    Bun + Hono API: /api/generate, /api/launch, /api/balance/:account
+  studio-web/          Astro (static): landing page at /, studio (React island) at /app/
+  orchestrator-api/    Bun + Hono API (also a Cloudflare Worker): /api/auth/session, /api/generate,
+                       /api/launch, /api/balance/:account, /api/health
 packages/
   schema/              zod: LaunchIdea, SiteConfig, API request/response types, NEAR helpers
 contracts/
@@ -85,13 +86,14 @@ cp apps/studio-web/.env.example apps/studio-web/.env
 bun run dev:web                                                    # http://localhost:4321
 ```
 
-Smoke test the API:
+Smoke test the API (public endpoints; `/api/generate` and `/api/launch` need a session, see [Auth](#auth-nep-413-sign-in--session)):
 
 ```bash
-curl -s -XPOST localhost:8787/api/generate -H 'content-type: application/json' \
-  -d '{"prompt":"a meme coin about sleepy penguins","ownerWallet":"alice.testnet"}'
+curl -s localhost:8787/api/health
 curl -s localhost:8787/api/balance/alice.testnet
 ```
+
+Routes in the web app: `/` is the landing page, `/app/` is the studio (wallet connect, top-up, generate, launch). `/app` redirects to `/app/` on Cloudflare.
 
 * `LLM_MOCK=1` returns a deterministic idea without calling NEAR AI.
 * `NEAR_MOCK=1` uses an in-memory ledger (every account starts at 10 NEAR) instead of testnet, so no relayer key is needed. The web app's balance display always reads the real vault via RPC.
@@ -116,6 +118,8 @@ curl -s localhost:8787/api/balance/alice.testnet
 | `AI_COMPUTE_COST_YOCTO` | `1e22` (0.01 NEAR) | charged per successful generation |
 | `TOKEN_TOTAL_SUPPLY` / `TOKEN_DECIMALS` | `1e27` / `18` | 1B tokens |
 | `EXPLORER_BASE` | `https://testnet.nearblocks.io` | |
+| `SESSION_SECRET` | random per process | HMAC key for session tokens; **set it** (secret) in any shared deployment |
+| `AUTH_RECIPIENT` | `VAULT_CONTRACT` | NEP-413 `recipient` the sign-in must be addressed to (the web app uses the vault id) |
 
 ### `apps/studio-web/.env` (build-time, `PUBLIC_*`)
 
@@ -130,6 +134,19 @@ curl -s localhost:8787/api/balance/alice.testnet
 `NEAR_ACCOUNT_ID` (parent `*.testnet`), `NEAR_PRIVATE_KEY`, optional `FT_FACTORY_ACCOUNT_ID`, `VAULT_ACCOUNT_ID`, `RELAYER_ACCOUNT_ID`, `PLATFORM_FEE_BPS`, `FACTORY_INITIAL_BALANCE` (5), `VAULT_INITIAL_BALANCE` (3).
 
 Never commit real `.env` files; only `.env.example` is tracked.
+
+## Auth (NEP-413 sign-in → session)
+
+`/api/generate` and `/api/launch` require `Authorization: Bearer <session>`; the account is taken from the session (an `ownerWallet` in the body must match it or the API answers 403). `/api/health`, `/api/balance/:account` and `/api/auth/session` are public.
+
+1. The studio asks the connected wallet to `signMessage` (NEP-413) once per session, with a random 32-byte nonce, `recipient` = the vault contract id and the message
+   `Sign in to One Shot Launchpad\naccount: <id>\nissued: <ISO time>`. Signing is free (no transaction).
+2. `POST /api/auth/session` with `{accountId, publicKey, signature, message, nonce, recipient, callbackUrl}`. The API rebuilds the NEP-413 payload (borsh: `u32 2147484061` tag, then `message`, `nonce[32]`, `recipient`, `Option<callbackUrl>`), sha256s it and verifies the ed25519 signature (with and without `callbackUrl`, since wallets differ). It then checks the message account matches, `issued` is at most 10 minutes old (1 minute of clock skew allowed), the recipient is `AUTH_RECIPIENT`, the nonce wasn't used before (best-effort in-memory cache), and, unless `NEAR_MOCK=1`, that the key is a **FullAccess** key of the account (`view_access_key`).
+3. It returns an HMAC-SHA256 token (`base64url(json{sub,exp}).base64url(mac)`, keyed by `SESSION_SECRET`) valid for 24h. The studio keeps it in `localStorage` and clears it on sign-out, account change or a 401.
+
+Inline wallets (Meteor, HERE, the MyNearWallet popup) return the signature directly. For redirect-style wallets the pending request is kept in `localStorage`, and on return to `/app/` the studio reads `accountId`/`publicKey`/`signature` (or `error`) from the URL hash or query, finishes the exchange and strips them from the URL.
+
+Tests: `src/auth.test.ts` (signatures built with near-api-js's own NEP-413 signer: valid, wrong account, wrong recipient, stale/future timestamp, tampered message/nonce, other key, non-full-access key, replay, token forgery/expiry) and `src/app.test.ts` (401/403 paths in mock mode).
 
 ## NEAR AI
 
@@ -168,17 +185,20 @@ The build runs Astro under the Bun runtime (`bun --bun astro build`), so the Nod
 
 ```bash
 cd apps/orchestrator-api
-npx -y wrangler@4 dev                       # local Worker on :8787; reads secrets from .env / .dev.vars (gitignored)
-npx -y wrangler@4 deploy                    # or: bun run deploy:api from the repo root
-# one-time secrets (pipe values in; never commit them)
-printf '%s' "$NEARAI_API_KEY"      | npx -y wrangler@4 secret put NEARAI_API_KEY
-printf '%s' "$RELAYER_PRIVATE_KEY" | npx -y wrangler@4 secret put RELAYER_PRIVATE_KEY
+npx -y wrangler@4.86.0 dev                  # local Worker on :8787; reads secrets from .env / .dev.vars (gitignored)
+npx -y wrangler@4.86.0 deploy               # or: bun run deploy:api from the repo root
+# one-time secrets (pipe values in; never commit or echo them)
+printf '%s' "$NEARAI_API_KEY"      | npx -y wrangler@4.86.0 secret put NEARAI_API_KEY
+printf '%s' "$RELAYER_PRIVATE_KEY" | npx -y wrangler@4.86.0 secret put RELAYER_PRIVATE_KEY
+openssl rand -hex 32               | npx -y wrangler@4.86.0 secret put SESSION_SECRET   # rotating it logs everyone out
 ```
+
+Wrangler is pinned to 4.86.0 because newer 4.x releases need Node 22 (the box has Node 20); with Node 22+ any 4.x works. `bun run deploy:api` needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the environment.
 
 A token with **Account > Workers Scripts: Edit** is enough (set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). The API is not deployed by Workers Builds; redeploy it with the command above after API changes. Keep `CORS_ORIGINS` in `vars` in sync with the frontend origin.
 
 ## Known limitations / later
 
-* **API calls are not authenticated by the wallet**: anyone who knows an account id can spend that account's credits on generations or launches (the tokens still go to the owner, and the funds go to treasury or token storage, never to the caller). Next step: require a NEP-413 `signMessage` signature (or a short-lived session) on `/api/generate` and `/api/launch`.
+* **Sessions are stateless**: a token can't be revoked before it expires (24h) except by rotating `SESSION_SECRET`. The nonce replay cache is per Worker isolate; the 10-minute freshness window is the main replay guard.
 * Cloudflare KV site storage, custom domains and the Solana path are out of scope here.
 * `buyUrl` points at the token's nearblocks page until a DEX pool is set up.
