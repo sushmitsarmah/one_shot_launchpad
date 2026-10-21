@@ -7,6 +7,8 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "observability": { "enabled": true },
+  // Token site configs (written at launch, served by /api/site/:ticker). Namespace "yeetpad-sites".
+  "kv_namespaces": [{ "binding": "SITES", "id": "39411e131b9049f3b4731d475866e58a" }],
   "vars": {
     "NEARAI_BASE_URL": "https://ollama.com/v1",
     "NEARAI_MODEL": "gemma4:31b",
@@ -17,6 +19,7 @@
     "VAULT_CONTRACT": "launch-vault.osl-launchpad-5786.testnet",
     "FT_FACTORY_CONTRACT": "ft-factory.osl-launchpad-5786.testnet",
     "RELAYER_ACCOUNT_ID": "osl-launchpad-5786.testnet",
+    "SITE_BASE": "https://yeetpad.fun",
     "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad.sushmitsarmah.workers.dev,http://localhost:4321"
   }
 }

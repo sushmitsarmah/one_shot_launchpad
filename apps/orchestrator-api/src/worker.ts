@@ -6,6 +6,7 @@
 import type { ExecutionContext } from "hono";
 import { app } from "./app";
 import { configureFromEnv, type EnvSource } from "./config";
+import { setSiteStore, type KVLike } from "./sites";
 
 let configured = false;
 
@@ -13,6 +14,7 @@ export default {
   fetch(request: Request, env: EnvSource, ctx: ExecutionContext) {
     if (!configured) {
       configureFromEnv(env);
+      setSiteStore(env.SITES as KVLike | undefined); // KV namespace yeetpad-sites
       configured = true;
     }
     return app.fetch(request, env, ctx);

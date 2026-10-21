@@ -57,3 +57,13 @@ details summary { cursor: pointer; font-weight: 700; }
 
 .badge { display: inline-block; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border: 2px solid var(--ink); border-radius: 999px; padding: 0.05rem 0.5rem; background: var(--cream-2); vertical-align: middle; }
 .badge-ok { background: var(--lime); }
+
+.count-pick { display: inline-flex; gap: 0.3rem; }
+.app-main .count-pick button { padding: 0.45rem 0.75rem; font-size: 0.95rem; background: var(--white); box-shadow: 2px 2px 0 var(--ink); }
+.app-main .count-pick button.on { background: var(--pink); color: var(--white); }
+.pick { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 700; }
+.app-main .pick input { width: 1.1rem; height: 1.1rem; accent-color: var(--pink); }
+.launch-results, .my-launches { list-style: none; padding: 0; margin: 0 0 0.8rem; display: grid; gap: 0.55rem; }
+.my-launches li { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; border: 2px solid var(--ink); border-radius: 14px; padding: 0.55rem 0.8rem; background: var(--cream); }
+.my-launches li > a:first-of-type { flex: 1; text-decoration: none; color: var(--ink); }
+.my-launches .dot { width: 1rem; height: 1rem; border-radius: 50%; border: 2px solid var(--ink); flex: none; }

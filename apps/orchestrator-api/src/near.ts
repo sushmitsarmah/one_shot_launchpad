@@ -107,6 +107,121 @@ export interface TokenArgs {
   icon?: string | null;
   decimals?: number;
   total_supply: string;
+  /** Compact site JSON stored with the factory record. */
+  site?: string | null;
+}
+
+/** Factory registry record (see near-ft-factory TokenRecord). */
+export interface TokenRecord {
+  ticker: string;
+  token_id: string;
+  owner_id: string;
+  created_at_ms: string;
+  site: string | null;
+}
+
+const mockRecords: TokenRecord[] = [];
+
+export async function isTickerTaken(ticker: string): Promise<boolean> {
+  if (config.nearMock) return mockRecords.some((r) => r.ticker === ticker);
+  const taken = await getProvider().callFunction<boolean>({
+    contractId: config.factoryContract,
+    method: "is_ticker_taken",
+    args: { ticker },
+  });
+  // Tokens created before the v0.2 registry are not in it; the account check covers them.
+  return Boolean(taken) || (await accountExists(`${ticker}.${config.factoryContract}`));
+}
+
+export async function getTokenRecord(ticker: string): Promise<TokenRecord | null> {
+  if (config.nearMock) return mockRecords.find((r) => r.ticker === ticker) ?? null;
+  const r = await getProvider().callFunction({
+    contractId: config.factoryContract,
+    method: "get_token",
+    args: { ticker },
+  });
+  return (r as unknown as TokenRecord | null) ?? null;
+}
+
+export async function getTokensByOwner(owner: string, fromIndex = 0, limit = 50): Promise<TokenRecord[]> {
+  if (config.nearMock) return mockRecords.filter((r) => r.owner_id === owner).reverse().slice(fromIndex, fromIndex + limit);
+  const r = await getProvider().callFunction({
+    contractId: config.factoryContract,
+    method: "get_tokens_by_owner",
+    args: { owner_id: owner, from_index: fromIndex, limit },
+  });
+  return (r as unknown as TokenRecord[] | null) ?? [];
+}
+
+interface VaultEvent {
+  event: string;
+  data: { ticker?: string; token_id?: string; account_id?: string };
+}
+
+/** NEP-297 events emitted by the vault across all receipts of a transaction. */
+function vaultEvents(outcome: unknown): VaultEvent[] {
+  const receipts = (outcome as { receipts_outcome?: { outcome: { executor_id: string; logs: string[] } }[] }).receipts_outcome ?? [];
+  const out: VaultEvent[] = [];
+  for (const r of receipts) {
+    if (r.outcome.executor_id !== config.vaultContract) continue;
+    for (const l of r.outcome.logs) {
+      if (!l.startsWith("EVENT_JSON:")) continue;
+      try {
+        const e = JSON.parse(l.slice(11));
+        if (e.standard === "yeetpad_vault") out.push({ event: e.event, data: e.data?.[0] ?? {} });
+      } catch {}
+    }
+  }
+  return out;
+}
+
+export interface BatchItemResult {
+  ticker: string;
+  tokenId: string | null;
+}
+
+/** One vault call launching up to 5 tokens; per-item results come from launch/refund events. */
+export async function executeSponsoredLaunchBatch(
+  user: string,
+  tokens: TokenArgs[],
+  depositRequired: bigint,
+): Promise<{ txHash: string; results: BatchItemResult[] }> {
+  if (config.nearMock) {
+    const b = mockBal(user);
+    const total = depositRequired * BigInt(tokens.length);
+    if (b < total) throw new Error("insufficient balance");
+    mockBalances.set(user, b - total);
+    const results = tokens.map((t) => {
+      const token_id = `${t.ticker}.${config.factoryContract}`;
+      mockRecords.push({ ticker: t.ticker, token_id, owner_id: user, created_at_ms: String(Date.now()), site: t.site ?? null });
+      return { ticker: t.ticker, tokenId: token_id };
+    });
+    return { txHash: mockHash(), results };
+  }
+  const r = await getRelayer().callFunctionRaw({
+    contractId: config.vaultContract,
+    methodName: "execute_sponsored_launch_batch",
+    args: { user_id: user, tokens, deposit_required: depositRequired.toString() },
+    gas: 300n * TGAS,
+  });
+  const txHash = r.transaction.hash;
+  let events = vaultEvents(r);
+  const settled = () => events.filter((e) => e.event === "launch" || e.event === "refund").length;
+  // Detached per-item promises may still be finishing; poll the final status briefly.
+  for (let i = 0; i < 10 && settled() < tokens.length; i++) {
+    await new Promise((res) => setTimeout(res, 1500));
+    const st = await getProvider().viewTransactionStatusWithReceipts({
+      txHash,
+      accountId: config.relayerAccountId!,
+      waitUntil: "FINAL",
+    } as never);
+    events = vaultEvents(st);
+  }
+  const results = tokens.map((t) => {
+    const ok = events.find((e) => e.event === "launch" && e.data.ticker === t.ticker);
+    return { ticker: t.ticker, tokenId: ok?.data.token_id ?? null };
+  });
+  return { txHash, results };
 }
 
 export async function executeSponsoredLaunch(
@@ -118,7 +233,9 @@ export async function executeSponsoredLaunch(
     const b = mockBal(user);
     if (b < depositRequired) throw new Error("insufficient balance");
     mockBalances.set(user, b - depositRequired);
-    return { tokenId: `${token.ticker}.${config.factoryContract}`, txHash: mockHash() };
+    const token_id = `${token.ticker}.${config.factoryContract}`;
+    mockRecords.push({ ticker: token.ticker, token_id, owner_id: user, created_at_ms: String(Date.now()), site: token.site ?? null });
+    return { tokenId: token_id, txHash: mockHash() };
   }
   const r = await getRelayer().callFunctionRaw({
     contractId: config.vaultContract,

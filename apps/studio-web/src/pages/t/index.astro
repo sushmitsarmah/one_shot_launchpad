@@ -1,0 +1,101 @@
+---
+// Per-token site. Served for every /t/<ticker> via public/_redirects (/t/:ticker -> /t/ 200);
+// the ticker is read from location.pathname and the SiteConfig fetched from /api/site/<ticker>.
+import Base from "../../layouts/Base.astro";
+import "../../styles/token.css";
+---
+<Base title="Token · Yeetpad" description="A token yeeted onto NEAR testnet with Yeetpad." page="token">
+  <main class="tk-main" id="tk" data-state="loading">
+    <div class="tk-loading wrap"><span class="brand-mark" aria-hidden="true">🚀</span> Loading token…</div>
+    <div class="tk-missing wrap">
+      <h1>No token here (yet)</h1>
+      <p id="tk-missing-msg">We couldn't find that ticker.</p>
+      <a class="btn btn-pink" href="/app/">Yeet one →</a>
+    </div>
+    <article class="tk-site">
+      <section class="tk-hero">
+        <div class="wrap tk-hero-inner">
+          <img id="tk-icon" class="tk-icon" alt="" width="128" height="128" />
+          <div>
+            <span id="tk-ticker" class="tk-ticker"></span>
+            <h1 id="tk-name"></h1>
+            <p id="tk-tagline" class="tk-tagline"></p>
+            <div class="tk-ctas">
+              <a id="tk-buy" class="btn btn-lg" target="_blank" rel="noreferrer">Get $<span class="tk-sym"></span> ↗</a>
+              <button id="tk-copy" class="btn btn-ghost" type="button">Copy contract</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="wrap tk-body">
+        <div class="tk-card tk-about">
+          <h2>What's the deal?</h2>
+          <p id="tk-desc"></p>
+        </div>
+        <div class="tk-card tk-facts">
+          <h2>Token facts</h2>
+          <dl>
+            <dt>Contract</dt><dd><code id="tk-contract"></code></dd>
+            <dt>Standard</dt><dd>NEP-141 · NEAR testnet</dd>
+            <dt>Creator</dt><dd><code id="tk-owner"></code></dd>
+            <dt>Launched</dt><dd id="tk-date"></dd>
+          </dl>
+          <p class="tk-links"><a id="tk-explorer" target="_blank" rel="noreferrer">Explorer ↗</a> <a id="tk-tx" target="_blank" rel="noreferrer" hidden>Launch tx ↗</a></p>
+        </div>
+        <div class="tk-card tk-palette">
+          <h2>Vibe palette</h2>
+          <div id="tk-swatches" class="tk-swatches"></div>
+        </div>
+      </section>
+      <p class="wrap tk-made">Made in one prompt with <a href="/">Yeetpad</a>. Testnet token, zero real value, pure vibes.</p>
+    </article>
+  </main>
+  <script>
+    import { API_URL } from "../../lib/config";
+    const root = document.getElementById("tk")!;
+    const $ = (id: string) => document.getElementById(id)!;
+    const ticker = (location.pathname.split("/")[2] ?? "").toLowerCase();
+    const fail = (msg: string) => { $("tk-missing-msg").textContent = msg; root.dataset.state = "missing"; };
+    if (!/^[a-z][a-z0-9]{1,15}$/.test(ticker)) fail("Add a ticker to the URL, like /t/soak.");
+    else
+      fetch(`${API_URL}/api/site/${ticker}`)
+        .then(async (r) => {
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) return fail(r.status === 404 ? `$${ticker.toUpperCase()} hasn't been yeeted yet.` : j.error ?? `HTTP ${r.status}`);
+          const s = j.siteConfig;
+          const c = s.theme.colors;
+          const st = root.style;
+          st.setProperty("--tk-primary", c.primary); st.setProperty("--tk-secondary", c.secondary);
+          st.setProperty("--tk-accent", c.accent); st.setProperty("--tk-bg", c.background); st.setProperty("--tk-text", c.text);
+          const sym = s.branding.ticker;
+          document.title = `${s.branding.name} ($${sym}) · Yeetpad`;
+          document.querySelector('meta[name="description"]')?.setAttribute("content", s.branding.tagline);
+          $("tk-name").textContent = s.branding.name;
+          $("tk-ticker").textContent = `$${sym}`;
+          document.querySelectorAll(".tk-sym").forEach((e) => (e.textContent = sym));
+          $("tk-tagline").textContent = s.branding.tagline;
+          $("tk-desc").textContent = s.branding.description;
+          const tl = s.tokenLaunch;
+          $("tk-contract").textContent = tl.contractOrMintAddress;
+          $("tk-owner").textContent = s.ownerWallet;
+          $("tk-date").textContent = tl.launchedAt ? new Date(tl.launchedAt).toLocaleString() : "—";
+          ($("tk-buy") as HTMLAnchorElement).href = tl.buyUrl;
+          ($("tk-explorer") as HTMLAnchorElement).href = tl.explorerUrl ?? tl.buyUrl;
+          if (tl.txHash) { const a = $("tk-tx") as HTMLAnchorElement; a.href = `https://testnet.nearblocks.io/txns/${tl.txHash}`; a.hidden = false; }
+          const icon = $("tk-icon") as HTMLImageElement;
+          if (s.iconDataUri) icon.src = s.iconDataUri; else icon.hidden = true;
+          $("tk-swatches").replaceChildren(...Object.entries(c).map(([k, v]) => {
+            const d = document.createElement("div");
+            d.innerHTML = `<span style="background:${String(v).replace(/[^#0-9a-zA-Z]/g, "")}"></span><b></b><small></small>`;
+            d.querySelector("b")!.textContent = k; d.querySelector("small")!.textContent = String(v);
+            return d;
+          }));
+          $("tk-copy").addEventListener("click", async () => {
+            await navigator.clipboard?.writeText(tl.contractOrMintAddress);
+            $("tk-copy").textContent = "Copied ✓";
+          });
+          root.dataset.state = "ready";
+        })
+        .catch((e) => fail(`Couldn't reach the API: ${e.message ?? e}`));
+  </script>
+</Base>

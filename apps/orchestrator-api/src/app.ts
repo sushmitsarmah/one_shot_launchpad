@@ -2,8 +2,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createMiddleware } from "hono/factory";
 import {
+  BatchLaunchRequest,
   GenerateRequest,
   LaunchRequest,
+  type BatchLaunchResponse,
+  type LaunchedToken,
   SessionRequest,
   NearAccountId,
   SiteConfig,
@@ -12,15 +15,22 @@ import {
   type LaunchResponse,
 } from "@osl/schema";
 import { config } from "./config";
-import { generateIdea } from "./llm";
+import { generateIdeas } from "./llm";
+import { tokenIconDataUri } from "./icon";
+import { buildSiteConfig, compactSite, getSite, putSite, siteStoreKind, siteUrl } from "./sites";
 import { AuthError, consumeNonceInMemory, issueSession, verifySession, verifySignIn } from "./auth";
 import {
-  accountExists,
   deductAiCompute,
   executeSponsoredLaunch,
+  executeSponsoredLaunchBatch,
   getRequiredLaunchDeposit,
+  getTokenRecord,
+  getTokensByOwner,
   getVaultBalance,
   isFullAccessKey,
+  isTickerTaken,
+  type TokenArgs,
+  type TokenRecord,
 } from "./near";
 
 type Env = { Bindings: Record<string, unknown>; Variables: { account: string } };
@@ -67,6 +77,9 @@ app.get("/api/health", (c) =>
     vault: config.vaultContract,
     factory: config.factoryContract,
     aiComputeCost: config.aiComputeCostYocto,
+    maxBatch: 5,
+    siteStore: siteStoreKind(),
+    siteBase: config.siteBase,
   }),
 );
 
@@ -110,18 +123,19 @@ app.post("/api/generate", requireSession, async (c) => {
   const body = GenerateRequest.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
   const { prompt } = body.data;
+  const count = body.data.count ?? 1;
   const ownerWallet = ownerFor(c, body.data.ownerWallet);
-  const cost = BigInt(config.aiComputeCostYocto);
+  const cost = BigInt(config.aiComputeCostYocto) * BigInt(count);
 
   const bal = await getVaultBalance(ownerWallet);
   if (bal < cost) {
-    return c.json({ error: `insufficient vault balance: need ${formatNear(cost)} NEAR, have ${formatNear(bal)}` }, 402);
+    return c.json({ error: `insufficient vault balance: need ${formatNear(cost)} NEAR for ${count} idea(s), have ${formatNear(bal)}` }, 402);
   }
 
-  const idea = await generateIdea(prompt);
-  // Charge only after a valid idea was produced.
+  const ideas = await generateIdeas(prompt, count);
+  // Charge only after valid ideas were produced (one charge for the whole set).
   const txHash = cost > 0n ? await deductAiCompute(ownerWallet, cost) : null;
-  const res: GenerateResponse = { idea, charged: cost.toString(), txHash };
+  const res: GenerateResponse = { idea: ideas[0], ideas, charged: cost.toString(), txHash };
   return c.json(res);
 });
 
@@ -132,7 +146,7 @@ app.post("/api/launch", requireSession, async (c) => {
   const ownerWallet = ownerFor(c, body.data.ownerWallet);
   const tokenAccount = `${idea.ticker}.${config.factoryContract}`;
 
-  if (await accountExists(tokenAccount)) {
+  if (await isTickerTaken(idea.ticker)) {
     return c.json({ error: `ticker "${idea.ticker}" is taken (${tokenAccount}); edit it and retry` }, 409);
   }
   const deposit = await getRequiredLaunchDeposit();
@@ -141,30 +155,129 @@ app.post("/api/launch", requireSession, async (c) => {
     return c.json({ error: `insufficient vault balance: launch needs ~${formatNear(deposit)} NEAR, have ${formatNear(bal)}` }, 402);
   }
 
-  const { tokenId, txHash } = await executeSponsoredLaunch(
-    ownerWallet,
-    {
-      ticker: idea.ticker,
-      name: idea.name,
-      symbol: idea.ticker.toUpperCase(),
-      decimals: config.tokenDecimals,
-      total_supply: config.tokenTotalSupply,
-    },
-    deposit,
-  );
+  const icon = tokenIconDataUri(idea);
+  const { tokenId, txHash } = await executeSponsoredLaunch(ownerWallet, tokenArgs(idea, icon), deposit);
   if (!tokenId) {
     return c.json({ error: "launch failed on-chain; your balance was refunded", txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}` }, 502);
   }
 
-  const siteConfig = SiteConfig.parse({
-    siteId: `${idea.ticker}-${Date.now().toString(36)}`,
-    ownerWallet,
-    ecosystem: "near",
-    blueprint: "meme-landing",
-    theme: { colors: idea.colors, fonts: { heading: "Space Grotesk", body: "Inter" } },
-    branding: { name: idea.name, ticker: idea.ticker.toUpperCase(), tagline: idea.tagline, description: idea.description },
-    tokenLaunch: { contractOrMintAddress: tokenId, buyUrl: `${config.explorerBase}/token/${tokenId}` },
-  });
+  const siteConfig = buildSiteConfig(ownerWallet, idea, tokenId, { txHash, icon });
+  await putSite(siteConfig);
   const res: LaunchResponse = { tokenId, txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}`, siteConfig };
   return c.json(res);
+});
+
+function tokenArgs(idea: import("@osl/schema").LaunchIdea, icon: string): TokenArgs {
+  return {
+    ticker: idea.ticker,
+    name: idea.name,
+    symbol: idea.ticker.toUpperCase(),
+    icon,
+    decimals: config.tokenDecimals,
+    total_supply: config.tokenTotalSupply,
+    site: compactSite(idea),
+  };
+}
+
+/** Launch 1-5 ideas in one vault call; each item is charged/refunded on its own. */
+app.post("/api/launch/batch", requireSession, async (c) => {
+  const body = BatchLaunchRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
+  const ownerWallet = ownerFor(c, body.data.ownerWallet);
+  const ideas = body.data.ideas;
+
+  const tickers = ideas.map((i) => i.ticker);
+  const dup = tickers.find((t, i) => tickers.indexOf(t) !== i);
+  if (dup) return c.json({ error: `duplicate ticker "${dup}" in batch` }, 400);
+  const taken = (await Promise.all(tickers.map(async (t) => ((await isTickerTaken(t)) ? t : null)))).filter(Boolean);
+  if (taken.length) return c.json({ error: `ticker(s) taken: ${taken.join(", ")}; edit and retry`, taken }, 409);
+
+  const deposit = await getRequiredLaunchDeposit();
+  const need = deposit * BigInt(ideas.length);
+  const bal = await getVaultBalance(ownerWallet);
+  if (bal < need) {
+    return c.json({ error: `insufficient vault balance: ${ideas.length} launch(es) need ~${formatNear(need)} NEAR, have ${formatNear(bal)}` }, 402);
+  }
+
+  const icons = ideas.map((i) => tokenIconDataUri(i));
+  const { txHash, results } = await executeSponsoredLaunchBatch(
+    ownerWallet,
+    ideas.map((idea, i) => tokenArgs(idea, icons[i])),
+    deposit,
+  );
+  const out: BatchLaunchResponse["results"] = [];
+  for (const [i, r] of results.entries()) {
+    if (r.tokenId) {
+      await putSite(buildSiteConfig(ownerWallet, ideas[i], r.tokenId, { txHash, icon: icons[i] }));
+      out.push({ ticker: r.ticker, ok: true, tokenId: r.tokenId, siteUrl: siteUrl(r.ticker), error: null });
+    } else {
+      out.push({ ticker: r.ticker, ok: false, tokenId: null, siteUrl: null, error: "launch failed on-chain; that item was refunded" });
+    }
+  }
+  const res: BatchLaunchResponse = { txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}`, results: out };
+  return c.json(res, out.some((r) => r.ok) ? 200 : 502);
+});
+
+// ---------- token sites (public) ----------
+
+function parseCompact(site: string | null): { tagline?: string; description?: string; colors?: LaunchedToken["colors"] } {
+  if (!site) return {};
+  try {
+    return JSON.parse(site);
+  } catch {
+    return {};
+  }
+}
+
+/** SiteConfig for /t/<ticker>: KV first, then rebuilt from the on-chain factory record. */
+app.get("/api/site/:ticker", async (c) => {
+  const ticker = c.req.param("ticker").toLowerCase();
+  if (!/^[a-z][a-z0-9]{1,15}$/.test(ticker)) return c.json({ error: "invalid ticker" }, 400);
+  const kv = await getSite(ticker);
+  if (kv) return c.json({ source: "kv", siteConfig: kv, siteUrl: siteUrl(ticker) });
+  const rec = await getTokenRecord(ticker);
+  if (!rec) return c.json({ error: "no such token" }, 404);
+  const s = parseCompact(rec.site);
+  if (!s.colors) return c.json({ error: "token has no site config" }, 404);
+  const siteConfig = SiteConfig.parse({
+    siteId: `${ticker}-chain`,
+    ownerWallet: rec.owner_id,
+    ecosystem: "near",
+    blueprint: "meme-landing",
+    theme: { colors: s.colors, fonts: { heading: "Bowlby One", body: "Space Grotesk" } },
+    branding: { name: ticker.toUpperCase(), ticker: ticker.toUpperCase(), tagline: s.tagline ?? "", description: s.description ?? "" },
+    tokenLaunch: {
+      contractOrMintAddress: rec.token_id,
+      buyUrl: `${config.explorerBase}/token/${rec.token_id}`,
+      explorerUrl: `${config.explorerBase}/address/${rec.token_id}`,
+      launchedAt: Number(rec.created_at_ms),
+    },
+  });
+  return c.json({ source: "chain", siteConfig, siteUrl: siteUrl(ticker) });
+});
+
+const toLaunched = async (r: TokenRecord): Promise<LaunchedToken> => {
+  const kv = await getSite(r.ticker);
+  const s = parseCompact(r.site);
+  return {
+    ticker: r.ticker,
+    tokenId: r.token_id,
+    ownerId: r.owner_id,
+    createdAt: Number(r.created_at_ms),
+    name: kv?.branding.name ?? null,
+    tagline: kv?.branding.tagline ?? s.tagline ?? null,
+    colors: kv?.theme.colors ?? s.colors ?? null,
+    siteUrl: siteUrl(r.ticker),
+    explorerUrl: `${config.explorerBase}/address/${r.token_id}`,
+  };
+};
+
+/** "My launches": tokens owned by an account, newest first (public; on-chain data). */
+app.get("/api/launches/:account", async (c) => {
+  const account = NearAccountId.safeParse(c.req.param("account"));
+  if (!account.success) return c.json({ error: "invalid account id" }, 400);
+  const from = Number(c.req.query("from") ?? 0) || 0;
+  const limit = Math.min(50, Number(c.req.query("limit") ?? 20) || 20);
+  const recs = await getTokensByOwner(account.data, from, limit);
+  return c.json({ account: account.data, launches: await Promise.all(recs.map(toLaunched)) });
 });

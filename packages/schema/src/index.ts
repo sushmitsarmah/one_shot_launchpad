@@ -50,21 +50,32 @@ export const SiteConfig = z.object({
   tokenLaunch: z.object({
     contractOrMintAddress: z.string(),
     buyUrl: z.string().url(),
+    explorerUrl: z.string().url().optional(),
+    txHash: z.string().optional(),
+    launchedAt: z.number().optional(), // unix ms
   }),
+  /** NEP-148 icon (data URI) used for the token. */
+  iconDataUri: z.string().optional(),
 });
 export type SiteConfig = z.infer<typeof SiteConfig>;
 
 // ---------- API contracts ----------
 
+export const MAX_BATCH = 5;
+
 export const GenerateRequest = z.object({
   prompt: z.string().min(3).max(1000),
+  /** How many distinct ideas to generate (1-5); each one is charged. */
+  count: z.number().int().min(1).max(MAX_BATCH).optional(),
   /** Optional: the account comes from the session; if sent it must match it. */
   ownerWallet: NearAccountId.optional(),
 });
 export type GenerateRequest = z.infer<typeof GenerateRequest>;
 
 export const GenerateResponse = z.object({
+  /** First idea (kept for single-idea clients). */
   idea: LaunchIdea,
+  ideas: z.array(LaunchIdea),
   charged: z.string(), // yoctoNEAR
   txHash: z.string().nullable(),
 });
@@ -84,6 +95,42 @@ export const LaunchResponse = z.object({
   siteConfig: SiteConfig,
 });
 export type LaunchResponse = z.infer<typeof LaunchResponse>;
+
+export const BatchLaunchRequest = z.object({
+  ownerWallet: NearAccountId.optional(),
+  ideas: z.array(LaunchIdea).min(1).max(MAX_BATCH),
+});
+export type BatchLaunchRequest = z.infer<typeof BatchLaunchRequest>;
+
+export const BatchLaunchItem = z.object({
+  ticker: z.string(),
+  ok: z.boolean(),
+  tokenId: z.string().nullable(),
+  siteUrl: z.string().url().nullable(),
+  error: z.string().nullable(),
+});
+export type BatchLaunchItem = z.infer<typeof BatchLaunchItem>;
+
+export const BatchLaunchResponse = z.object({
+  txHash: z.string(),
+  explorerUrl: z.string().url(),
+  results: z.array(BatchLaunchItem),
+});
+export type BatchLaunchResponse = z.infer<typeof BatchLaunchResponse>;
+
+/** A launched token as listed in "My launches" / the token page. */
+export const LaunchedToken = z.object({
+  ticker: z.string(),
+  tokenId: z.string(),
+  ownerId: z.string(),
+  createdAt: z.number(), // unix ms
+  name: z.string().nullable(),
+  tagline: z.string().nullable(),
+  colors: LaunchIdea.shape.colors.nullable(),
+  siteUrl: z.string().url(),
+  explorerUrl: z.string().url(),
+});
+export type LaunchedToken = z.infer<typeof LaunchedToken>;
 
 export const BalanceResponse = z.object({
   account: z.string(),

@@ -39,6 +39,8 @@ export function buildConfig(src: EnvSource = {}) {
     tokenTotalSupply: env("TOKEN_TOTAL_SUPPLY", (10n ** 27n).toString()) as string,
     tokenDecimals: Number(env("TOKEN_DECIMALS", "18")),
     explorerBase: env("EXPLORER_BASE", "https://testnet.nearblocks.io") as string,
+    /** Public base URL of the web app; token pages live at <siteBase>/t/<ticker>. */
+    siteBase: env("SITE_BASE", "https://yeetpad.fun") as string,
 
     // Auth: HMAC secret for session tokens (wrangler secret / .env). NEP-413 recipient defaults to the vault id.
     sessionSecret: env("SESSION_SECRET"),

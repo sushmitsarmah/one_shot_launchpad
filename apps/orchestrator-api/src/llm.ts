@@ -98,3 +98,19 @@ export async function generateIdea(prompt: string): Promise<LaunchIdea> {
   if (!text) throw new Error("LLM returned an empty response");
   return parseIdeaText(text);
 }
+
+/** Generates `count` ideas in parallel and makes their tickers unique. */
+export async function generateIdeas(prompt: string, count = 1): Promise<LaunchIdea[]> {
+  const n = Math.max(1, Math.min(5, Math.floor(count)));
+  const variants = Array.from({ length: n }, (_, i) =>
+    n === 1 ? prompt : `${prompt}\n\n(Idea ${i + 1} of ${n}: make it clearly different from the others, with its own name, ticker and palette.)`,
+  );
+  const ideas = await Promise.all(variants.map((p) => generateIdea(p)));
+  const seen = new Set<string>();
+  return ideas.map((idea) => {
+    let t = idea.ticker;
+    for (let k = 2; seen.has(t); k++) t = `${idea.ticker.slice(0, 15 - String(k).length)}${k}`;
+    seen.add(t);
+    return t === idea.ticker ? idea : { ...idea, ticker: t };
+  });
+}
