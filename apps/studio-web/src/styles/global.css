@@ -105,3 +105,4 @@ details summary { cursor: pointer; font-weight: 700; }
 .app-main .ml-settings button.ghost { padding: 0.45rem 0.85rem; font-size: 0.85rem; }
 .ml-settings p { margin: 0; }
 .err-inline { color: #c81e4b; font-weight: 700; }
+.my-launches li { align-items: start; } .my-launches .dot { margin-top: 0.2rem; }
