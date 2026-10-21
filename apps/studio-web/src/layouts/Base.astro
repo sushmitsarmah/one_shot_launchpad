@@ -1,0 +1,52 @@
+---
+import SiteHeader from "../components/SiteHeader.astro";
+import "../styles/brand.css";
+
+interface Props {
+  title: string;
+  description?: string;
+  page: "home" | "app";
+}
+const {
+  title,
+  description = "One prompt in, one launched NEP-141 token (and its landing site) out. AI-powered token launchpad on NEAR testnet.",
+  page,
+} = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#fff3dc" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bowlby+One&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class={`page-${page}`}>
+    <SiteHeader page={page} />
+    <slot />
+    <footer class="site-footer">
+      <div class="wrap footer-inner">
+        <a class="brand small" href="/"><span class="brand-mark" aria-hidden="true">🚀</span> One Shot Launchpad</a>
+        <p>
+          Runs on <strong>NEAR testnet</strong>. Test tokens only, no real money, and nothing here is financial advice.
+        </p>
+        <p class="footer-links">
+          <a href="/app/">App</a>
+          <a href="/#how">How it works</a>
+          <a href="/#faq">FAQ</a>
+          <a href="https://github.com/sushmitsarmah/one_shot_launchpad" target="_blank" rel="noreferrer">GitHub ↗</a>
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

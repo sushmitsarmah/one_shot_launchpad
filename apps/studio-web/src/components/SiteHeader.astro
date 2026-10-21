@@ -1,0 +1,26 @@
+---
+interface Props { page: "home" | "app" }
+const { page } = Astro.props;
+---
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="/" aria-label="One Shot Launchpad home">
+      <span class="brand-mark" aria-hidden="true">🚀</span>
+      <span class="brand-name">One&nbsp;Shot <span class="brand-hl">Launchpad</span></span>
+    </a>
+    <nav class="header-nav">
+      {page === "home" ? (
+        <>
+          <a class="nav-link hide-sm" href="#how">How it works</a>
+          <a class="nav-link hide-sm" href="#faq">FAQ</a>
+          <a class="btn btn-sm btn-pink" href="/app/">Go to app →</a>
+        </>
+      ) : (
+        <>
+          <span class="pill pill-testnet">testnet</span>
+          <a class="btn btn-sm btn-ghost" href="/">← Home</a>
+        </>
+      )}
+    </nav>
+  </div>
+</header>

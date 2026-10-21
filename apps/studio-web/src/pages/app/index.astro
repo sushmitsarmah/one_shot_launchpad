@@ -1,0 +1,14 @@
+---
+import Base from "../../layouts/Base.astro";
+import Studio from "../../components/Studio.tsx";
+import "../../styles/global.css";
+---
+<Base title="Studio · One Shot Launchpad" description="Connect a NEAR wallet, top up AI credits, generate a token idea and launch it in one shot." page="app">
+  <main class="app-main">
+    <div class="app-hero">
+      <h1>The <span class="hl-app">Studio</span></h1>
+      <p>Prompt → idea → NEP-141 token on NEAR testnet.</p>
+    </div>
+    <Studio client:only="react" />
+  </main>
+</Base>

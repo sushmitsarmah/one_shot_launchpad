@@ -1,24 +1,206 @@
 ---
-import Studio from "../components/Studio.tsx";
-import "../styles/global.css";
+import Base from "../layouts/Base.astro";
+import "../styles/landing.css";
+
+const steps = [
+  { n: "1", emoji: "🔌", title: "Connect a NEAR wallet", body: "MyNearWallet, Meteor or HERE. Testnet accounts are free.", color: "var(--sky)" },
+  { n: "2", emoji: "🪙", title: "Top up credits", body: "Deposit a little testnet NEAR into the launch vault. Anything you don't use can be withdrawn.", color: "var(--yellow)" },
+  { n: "3", emoji: "🧠", title: "Prompt the AI", body: "Describe a vibe. The AI cooks up a name, ticker, tagline, story and colour palette.", color: "var(--pink)" },
+  { n: "4", emoji: "🚀", title: "Launch it", body: "One click deploys a real NEP-141 token with the whole supply minted to you, plus its site config.", color: "var(--lime)" },
+];
+
+const ideas = [
+  {
+    name: "Zen Capy Springs", ticker: "SOAK", emoji: "♨️",
+    tagline: "Maximum chill, minimum effort.",
+    prompt: "a meme coin for capybaras who love hot springs",
+    bg: "#FDF5E6", fg: "#4A3728", accent: "#FFB347", accent2: "#87CEEB", tilt: -3,
+  },
+  {
+    name: "Syntax Kitten", ticker: "SYNCAT", emoji: "🐈‍⬛",
+    tagline: "Purrs in TypeScript. Knocks prod off the table.",
+    prompt: "a token for cats who code at 3am",
+    bg: "#1E1B3A", fg: "#F3EEFF", accent: "#C6F432", accent2: "#FF4FA3", tilt: 2.5,
+  },
+  {
+    name: "Celestial Rooftop", ticker: "STARGAZE", emoji: "🔭",
+    tagline: "The decentralized observatory for urban night-watchers.",
+    prompt: "night-owl astronomers who stargaze on rooftops",
+    bg: "#0B0B15", fg: "#E0E0FF", accent: "#FFD700", accent2: "#7B5CFF", tilt: -1.5,
+  },
+  {
+    name: "Sleepy Penguin", ticker: "SNOOZE", emoji: "🐧",
+    tagline: "Hibernation-as-a-service for the whole colony.",
+    prompt: "a wholesome meme coin for sleepy penguins",
+    bg: "#E6F7FF", fg: "#10304A", accent: "#4CC9F0", accent2: "#FF7A1A", tilt: 3,
+  },
+];
+
+const marquee = ["$SOAK", "$SYNCAT", "$STARGAZE", "$SNOOZE", "$WOOF", "$BAGEL", "$MOTHLAMP", "$NOODLE", "$GIGAFROG", "$TOASTY", "$CLOUDCAT", "$DUCKPOND"];
+const marqueeEmoji = ["♨️", "🐈‍⬛", "🔭", "🐧", "🐶", "🥯", "🦋", "🍜", "🐸", "🍞", "☁️", "🦆"];
+
+const faqs = [
+  { q: "What does it cost?", a: "About <strong>0.01 NEAR</strong> of credits per generated idea (charged only if the AI returns a valid idea), and about <strong>1.77 NEAR</strong> per launch to pay for the new token contract's on-chain storage." },
+  { q: "Is this real money?", a: "Nope. Everything runs on <strong>NEAR testnet</strong>, so it's play money. Grab free testnet NEAR when you create a testnet wallet." },
+  { q: "Who owns the token?", a: "You do. The full supply is minted straight to your wallet. The launchpad's relayer just pays the gas and takes the storage fee from your vault credits." },
+  { q: "Can I get unused credits back?", a: "Yes. Your vault balance is yours, and you can withdraw what you don't spend." },
+];
 ---
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <title>One Shot Launchpad · NEAR testnet</title>
-    <meta name="description" content="Connect a NEAR wallet, top up AI credits, generate a token idea and launch it in one shot." />
-  </head>
-  <body>
-    <main>
-      <header>
-        <h1>One Shot Launchpad</h1>
-        <p class="muted">Prompt → idea → NEP-141 token on NEAR testnet. Powered by NEAR AI.</p>
-      </header>
-      <Studio client:only="react" />
-      <footer class="muted small">Testnet only · nothing here is financial advice.</footer>
-    </main>
-  </body>
-</html>
+<Base title="One Shot Launchpad · one prompt → one token" page="home">
+  <main class="landing">
+    <!-- ================= HERO ================= -->
+    <section class="hero">
+      <div class="blob blob-a" aria-hidden="true"></div>
+      <div class="blob blob-b" aria-hidden="true"></div>
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <span class="pill hero-pill">✨ AI token factory · NEAR testnet</span>
+          <h1 class="hero-title">
+            One prompt.<br />
+            <span class="hl hl-pink">One token.</span><br />
+            <span class="hl-under">Lift-off.</span>
+          </h1>
+          <p class="hero-sub">
+            Type a silly idea. Our AI dreams up the name, ticker, story and colours, then launches a real NEP-141 token
+            and its landing site on NEAR. All in one shot.
+          </p>
+          <div class="hero-ctas">
+            <a class="btn btn-lg" href="/app/">Go to app <span class="arrow" aria-hidden="true">→</span></a>
+            <a class="link-squiggle" href="#how">How it works</a>
+          </div>
+          <ul class="hero-facts">
+            <li><b>~10s</b> idea → token</li>
+            <li><b>0.01</b> NEAR per idea</li>
+            <li><b>100%</b> supply to you</li>
+          </ul>
+        </div>
+
+        <div class="hero-art" aria-hidden="true">
+          <div class="launch-pad">
+            <div class="sun"></div>
+            <svg class="rocket" viewBox="0 0 200 300" width="220" height="330">
+              <g stroke="#1b1433" stroke-width="6" stroke-linejoin="round" stroke-linecap="round">
+                <path class="flame" d="M78 236 Q100 300 122 236 Q112 262 100 250 Q88 262 78 236Z" fill="#ff7a1a" />
+                <path d="M62 170 L28 222 L70 214 Z" fill="#ff4fa3" />
+                <path d="M138 170 L172 222 L130 214 Z" fill="#ff4fa3" />
+                <path d="M100 18 C150 60 150 170 132 232 L68 232 C50 170 50 60 100 18Z" fill="#fffdf8" />
+                <path d="M100 18 C120 34 132 52 138 74 L62 74 C68 52 80 34 100 18Z" fill="#7b5cff" />
+                <circle cx="100" cy="122" r="26" fill="#4cc9f0" />
+                <path d="M88 112 Q96 104 106 108" fill="none" stroke="#fffdf8" stroke-width="5" />
+                <path d="M100 190 L100 232" fill="none" />
+              </g>
+            </svg>
+            <div class="coin c1">Ⓝ</div>
+            <div class="coin c2">$</div>
+            <div class="coin c3">★</div>
+            <div class="coin c4">Ⓝ</div>
+            <span class="spark s1">✦</span>
+            <span class="spark s2">✸</span>
+            <span class="spark s3">✦</span>
+            <div class="sticker sticker-hero">
+              <span>prompt</span>
+              <b>“capybaras in hot springs”</b>
+              <span class="sticker-arrow">↓</span>
+              <b class="sticker-ticker">$SOAK</b>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= MARQUEE ================= -->
+    <div class="marquee" aria-label="Example token tickers">
+      <div class="marquee-track">
+        {[0, 1].map((dup) => (
+          <ul aria-hidden={dup === 1 ? "true" : undefined}>
+            {marquee.map((t, i) => (
+              <li><span aria-hidden="true">{marqueeEmoji[i]}</span>{t}</li>
+            ))}
+          </ul>
+        ))}
+      </div>
+    </div>
+
+    <!-- ================= HOW IT WORKS ================= -->
+    <section id="how" class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="pill">How it works</span>
+          <h2>From brain-fart to <span class="hl hl-lime">blockchain</span> in four steps</h2>
+        </div>
+        <ol class="steps">
+          {steps.map((s, i) => (
+            <li class="step" style={`--c:${s.color}; --tilt:${i % 2 ? 1.5 : -1.5}deg`}>
+              <span class="step-n">{s.n}</span>
+              <span class="step-emoji" aria-hidden="true">{s.emoji}</span>
+              <h3>{s.title}</h3>
+              <p>{s.body}</p>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
+
+    <!-- ================= EXAMPLES ================= -->
+    <section id="examples" class="section section-ink">
+      <div class="squiggle-top" aria-hidden="true"></div>
+      <div class="wrap">
+        <div class="section-head">
+          <span class="pill pill-pink">Fresh off the line</span>
+          <h2>Ideas the factory spat out</h2>
+          <p class="section-sub">Real outputs from one-line prompts. Yours will be weirder.</p>
+        </div>
+        <div class="ideas">
+          {ideas.map((d) => (
+            <article class="idea-sticker" style={`--bg:${d.bg}; --fg:${d.fg}; --ac:${d.accent}; --ac2:${d.accent2}; --tilt:${d.tilt}deg`}>
+              <div class="idea-top">
+                <span class="idea-emoji" aria-hidden="true">{d.emoji}</span>
+                <span class="idea-ticker">${d.ticker}</span>
+              </div>
+              <h3>{d.name}</h3>
+              <p class="idea-tag">{d.tagline}</p>
+              <p class="idea-prompt"><span>prompt</span> “{d.prompt}”</p>
+              <div class="idea-swatches" aria-hidden="true">
+                <i style={`background:${d.accent}`}></i><i style={`background:${d.accent2}`}></i><i style={`background:${d.fg}`}></i>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= FAQ ================= -->
+    <section id="faq" class="section">
+      <div class="wrap faq-grid">
+        <div class="section-head left">
+          <span class="pill">What it costs</span>
+          <h2>Pocket change.<br /><span class="hl hl-yellow">Testnet</span> pocket change.</h2>
+          <div class="price-tags">
+            <div class="price-tag pt-1"><b>~0.01</b><span>NEAR / idea</span></div>
+            <div class="price-tag pt-2"><b>~1.77</b><span>NEAR / launch</span></div>
+          </div>
+        </div>
+        <div class="faq">
+          {faqs.map((f, i) => (
+            <details open={i === 0}>
+              <summary>{f.q}</summary>
+              <p set:html={f.a} />
+            </details>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= FINAL CTA ================= -->
+    <section class="section">
+      <div class="wrap">
+        <div class="cta-card">
+          <span class="cta-emoji" aria-hidden="true">🏭</span>
+          <h2>The factory is warmed up.</h2>
+          <p>Bring a wallet and a weird idea. We'll handle the rest.</p>
+          <a class="btn btn-lg btn-pink" href="/app/">Go to app <span class="arrow" aria-hidden="true">→</span></a>
+        </div>
+      </div>
+    </section>
+  </main>
+</Base>
