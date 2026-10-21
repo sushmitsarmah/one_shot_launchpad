@@ -1,0 +1,22 @@
+{
+  // Orchestrator API as a Cloudflare Worker. Deploy: `npx wrangler deploy` from this directory.
+  // Secrets (not in this file): `wrangler secret put NEARAI_API_KEY`, `wrangler secret put RELAYER_PRIVATE_KEY`.
+  "name": "one-shot-launchpad-api",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "vars": {
+    "NEARAI_BASE_URL": "https://ollama.com/v1",
+    "NEARAI_MODEL": "gemma4:31b",
+    "LLM_MAX_TOKENS": "500",
+    "LLM_MOCK": "0",
+    "NEAR_MOCK": "0",
+    "NEAR_RPC_URL": "https://test.rpc.fastnear.com",
+    "VAULT_CONTRACT": "launch-vault.osl-launchpad-5786.testnet",
+    "FT_FACTORY_CONTRACT": "ft-factory.osl-launchpad-5786.testnet",
+    "RELAYER_ACCOUNT_ID": "osl-launchpad-5786.testnet",
+    "CORS_ORIGINS": "https://one-shot-launchpad.sushmitsarmah.workers.dev,http://localhost:4321"
+  }
+}

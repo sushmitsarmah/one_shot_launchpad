@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { LaunchIdea, launchIdeaJsonSchema } from "@osl/schema";
-import { config } from "./config";
+import { config, configVersion } from "./config";
 
 const SYSTEM = `You are a creative crypto launch strategist for the NEAR ecosystem.
 Given a user's prompt, invent ONE token + landing-site idea. Reply with JSON only, matching:
@@ -10,9 +10,13 @@ Given a user's prompt, invent ONE token + landing-site idea. Reply with JSON onl
 Keep it fun but tasteful. Ensure text colour contrasts with background.`;
 
 let client: OpenAI | null = null;
+let clientVersion = -1;
 function getClient() {
   if (!config.nearAiApiKey) throw new Error("NEARAI_API_KEY is not set (or set LLM_MOCK=1)");
-  client ??= new OpenAI({ baseURL: config.nearAiBaseUrl, apiKey: config.nearAiApiKey });
+  if (!client || clientVersion !== configVersion()) {
+    client = new OpenAI({ baseURL: config.nearAiBaseUrl, apiKey: config.nearAiApiKey });
+    clientVersion = configVersion();
+  }
   return client;
 }
 

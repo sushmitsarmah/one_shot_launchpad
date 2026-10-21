@@ -10,6 +10,8 @@
   "scripts": {
     "dev:api": "cd apps/orchestrator-api && bun run dev",
     "dev:web": "cd apps/studio-web && bun run dev",
+    "dev:api:worker": "cd apps/orchestrator-api && npx -y wrangler@4 dev",
+    "deploy:api": "cd apps/orchestrator-api && npx -y wrangler@4 deploy",
     "build:web": "cd apps/studio-web && bun run build",
     "contracts:build": "bash contracts/build-contracts.sh",
     "contracts:test": "cargo test --workspace && cd contracts/integration-tests && cargo test",

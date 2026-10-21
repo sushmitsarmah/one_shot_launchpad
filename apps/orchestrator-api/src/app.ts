@@ -19,11 +19,15 @@ import {
   getVaultBalance,
 } from "./near";
 
-export const app = new Hono();
+export const app = new Hono<{ Bindings: Record<string, unknown> }>();
 
 app.use(
   "/api/*",
-  cors({ origin: config.corsOrigins.includes("*") ? "*" : config.corsOrigins, allowMethods: ["GET", "POST", "OPTIONS"] }),
+  cors({
+    // Resolved per request so Worker env bindings (applied on first request) are honoured.
+    origin: (origin) => (config.corsOrigins.includes("*") ? "*" : config.corsOrigins.includes(origin) ? origin : null),
+    allowMethods: ["GET", "POST", "OPTIONS"],
+  }),
 );
 
 app.onError((err, c) => {

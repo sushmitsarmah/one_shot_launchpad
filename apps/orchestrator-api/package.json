@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "dev:worker": "npx -y wrangler@4 dev",
+    "deploy": "npx -y wrangler@4 deploy"
   },
   "dependencies": {
     "@osl/schema": "workspace:*",
