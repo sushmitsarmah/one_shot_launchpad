@@ -1,5 +1,6 @@
 //! Token factory: `create_token` creates `<ticker>.<factory>`, deploys the embedded NEP-141 wasm
-//! and mints the full supply to `owner_id`. Keeps a registry of launched tokens (by ticker and
+//! and mints the full supply to `owner_id` (or to `mint_to`, e.g. the vault seeding a Rhea pool;
+//! the registry owner stays `owner_id`). Keeps a registry of launched tokens (by ticker and
 //! by owner, paginated) plus an optional small site config per token for Yeetpad token pages.
 //!
 //! Admin: two-step owner transfer, pause/unpause, owner-only `update_contract` + `migrate`.
@@ -185,6 +186,7 @@ impl Factory {
         total_supply: U128,
         owner_id: AccountId,
         site: Option<String>,
+        mint_to: Option<AccountId>,
     ) -> Promise {
         require!(!self.paused, "factory is paused");
         validate_ticker(&ticker);
@@ -221,7 +223,7 @@ impl Factory {
             .deploy_contract(TOKEN_WASM.to_vec())
             .function_call_weight(
                 "new".to_string(),
-                json!({ "owner_id": owner_id, "total_supply": total_supply, "metadata": metadata })
+                json!({ "owner_id": owner_id, "total_supply": total_supply, "metadata": metadata, "mint_to": mint_to })
                     .to_string()
                     .into_bytes(),
                 NearToken::from_yoctonear(0),
@@ -403,7 +405,7 @@ mod tests {
     fn requires_deposit() {
         ctx(0, 1);
         let mut f = Factory::new(accounts(0));
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None);
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None, None);
     }
 
     #[test]
@@ -412,7 +414,7 @@ mod tests {
         let mut f = Factory::new(accounts(0));
         let req = f.get_required_deposit().0;
         ctx(2, req);
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), Some("{\"tagline\":\"hi\"}".into()));
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), Some("{\"tagline\":\"hi\"}".into()), None);
         assert!(f.is_ticker_taken("moon".into()));
         self_ctx();
         let id = f.on_token_created(
@@ -441,11 +443,11 @@ mod tests {
         let mut f = Factory::new(accounts(0));
         let req = f.get_required_deposit().0;
         ctx(2, req);
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None);
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None, None);
         self_ctx();
         f.on_token_created("moon".into(), "moon.factory.test.near".parse().unwrap(), accounts(1), accounts(2), U128(req), None, Ok(()));
         ctx(2, req);
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None);
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None, None);
     }
 
     #[test]
@@ -455,8 +457,8 @@ mod tests {
         let mut f = Factory::new(accounts(0));
         let req = f.get_required_deposit().0;
         ctx(2, req);
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None);
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None);
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None, None);
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None, None);
     }
 
     #[test]
@@ -465,7 +467,7 @@ mod tests {
         let mut f = Factory::new(accounts(0));
         let req = f.get_required_deposit().0;
         ctx(2, req);
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None);
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None, None);
         self_ctx();
         let r = f.on_token_created("moon".into(), "moon.factory.test.near".parse().unwrap(), accounts(1), accounts(2), U128(req), None, Err(PromiseError::Failed));
         assert!(r.is_none());
@@ -481,7 +483,7 @@ mod tests {
         f.set_paused(true);
         let req = f.get_required_deposit().0;
         ctx(2, req);
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None);
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None, None);
     }
 
     #[test]
@@ -510,6 +512,6 @@ mod tests {
         let mut f = Factory::new(accounts(0));
         let req = f.get_required_deposit().0;
         ctx(2, req);
-        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), Some("x".repeat(MAX_SITE_BYTES + 1)));
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), Some("x".repeat(MAX_SITE_BYTES + 1)), None);
     }
 }

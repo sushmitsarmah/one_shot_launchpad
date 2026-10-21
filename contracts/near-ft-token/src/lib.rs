@@ -1,5 +1,6 @@
 //! Minimal NEP-141 fungible token (+ NEP-145 storage, NEP-148 metadata).
-//! The whole supply is minted to `owner_id` at init.
+//! The whole supply is minted at init to `mint_to` (defaults to `owner_id`). `mint_to` lets the
+//! Yeetpad vault hold a listed launch's supply just long enough to seed the Rhea pool.
 #![allow(deprecated)]
 use near_contract_standards::fungible_token::events::FtMint;
 use near_contract_standards::fungible_token::metadata::{
@@ -36,7 +37,7 @@ enum StorageKey {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(owner_id: AccountId, total_supply: U128, metadata: FungibleTokenMetadata) -> Self {
+    pub fn new(owner_id: AccountId, total_supply: U128, metadata: FungibleTokenMetadata, mint_to: Option<AccountId>) -> Self {
         require!(!env::state_exists(), "Already initialized");
         metadata.assert_valid();
         require!(total_supply.0 > 0, "total_supply must be > 0");
@@ -45,10 +46,11 @@ impl Contract {
             metadata: LazyOption::new(StorageKey::Metadata, Some(&metadata)),
             owner_id: owner_id.clone(),
         };
-        this.token.internal_register_account(&owner_id);
-        this.token.internal_deposit(&owner_id, total_supply.into());
+        let holder = mint_to.unwrap_or_else(|| owner_id.clone());
+        this.token.internal_register_account(&holder);
+        this.token.internal_deposit(&holder, total_supply.into());
         FtMint {
-            owner_id: &owner_id,
+            owner_id: &holder,
             amount: total_supply,
             memo: Some("initial supply"),
         }
@@ -157,17 +159,31 @@ mod tests {
         let c = Contract::new(
             accounts(1),
             U128(1_000),
-            FungibleTokenMetadata {
-                spec: FT_METADATA_SPEC.to_string(),
-                name: "Test".into(),
-                symbol: "TST".into(),
-                icon: None,
-                reference: None,
-                reference_hash: None,
-                decimals: 18,
-            },
+            meta(),
+            None,
         );
         assert_eq!(c.ft_balance_of(accounts(1)).0, 1_000);
         assert_eq!(c.ft_total_supply().0, 1_000);
+    }
+
+    #[test]
+    fn mint_to_overrides_holder() {
+        testing_env!(VMContextBuilder::new().build());
+        let c = Contract::new(accounts(1), U128(1_000), meta(), Some(accounts(2)));
+        assert_eq!(c.ft_balance_of(accounts(2)).0, 1_000);
+        assert_eq!(c.ft_balance_of(accounts(1)).0, 0);
+        assert_eq!(c.get_owner(), accounts(1));
+    }
+
+    fn meta() -> FungibleTokenMetadata {
+        FungibleTokenMetadata {
+            spec: FT_METADATA_SPEC.to_string(),
+            name: "Test".into(),
+            symbol: "TST".into(),
+            icon: None,
+            reference: None,
+            reference_hash: None,
+            decimals: 18,
+        }
     }
 }

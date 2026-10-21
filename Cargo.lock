@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "near-ft-factory"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "near-contract-standards",
  "near-sdk",
@@ -1283,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "near-ft-token"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "near-contract-standards",
  "near-sdk",
@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "near-launch-vault"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "near-sdk",
 ]

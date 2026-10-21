@@ -5,6 +5,13 @@
 //! Events: NEP-297 `EVENT_JSON` logs, standard `yeetpad_vault`, events
 //! `deposit`, `charge`, `launch_start`, `launch`, `refund`, `withdraw` (+ admin events).
 //! Admin: relayers, fee, pause/unpause, two-step owner transfer, `update_contract` + `migrate`.
+//!
+//! Rhea listing (v0.3): a launch with `hold_for_listing` mints its supply to the vault, then
+//! `list_on_rhea` creates a Rhea DCL pool `<token>|<wnear>|10000`, adds the pool share one-sided,
+//! and hands everything to the creator: the LP position NFT (`nft_transfer`) and every remaining
+//! token (creator share + dust). The vault keeps nothing. Events `listed` / `list_failed` /
+//! `released`. If listing fails at any step, the full balance (and the position, if one was
+//! made) goes to the creator; `release` retries that hand-off.
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::serde_json::json;
@@ -21,6 +28,29 @@ const GAS_FOR_FACTORY: Gas = Gas::from_tgas(40);
 const GAS_FOR_LAUNCH_CALLBACK: Gas = Gas::from_tgas(7);
 const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(50);
 const MAX_FEE_BPS: u16 = 10_000;
+/// Rhea DCL fee tier used for listings (1%) and its point spacing.
+pub const DCL_FEE: u32 = 10_000;
+pub const DCL_POINT_DELTA: i32 = 200;
+pub const DCL_MAX_POINT: i32 = 800_000;
+const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
+/// NEP-145 registration on our token (and wNEAR-style tokens).
+pub const TOKEN_STORAGE: u128 = 1_250_000_000_000_000_000_000;
+/// Upper bounds on what a relayer may ask the vault to spend on one listing.
+/// Per-listing top-up of the vault's own DCL storage (the deposit sits there until it is added).
+pub const VAULT_DCL_TOPUP: u128 = 20_000_000_000_000_000_000_000; // 0.02 NEAR
+pub const MAX_POOL_DEPOSIT: u128 = 200_000_000_000_000_000_000_000; // 0.2 NEAR
+pub const MAX_DCL_STORAGE: u128 = 1_000_000_000_000_000_000_000_000; // 1 NEAR
+const GAS_STORAGE: Gas = Gas::from_tgas(5);
+const GAS_CREATE_POOL: Gas = Gas::from_tgas(15);
+const GAS_FT_TRANSFER_CALL: Gas = Gas::from_tgas(50);
+const GAS_ADD_LIQUIDITY: Gas = Gas::from_tgas(60);
+const GAS_NFT_TRANSFER: Gas = Gas::from_tgas(25);
+const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
+const GAS_VIEW: Gas = Gas::from_tgas(5);
+const GAS_WITHDRAW_ASSET: Gas = Gas::from_tgas(40);
+const GAS_ON_PREPARED: Gas = Gas::from_tgas(30);
+const GAS_ON_LIQUIDITY: Gas = Gas::from_tgas(25);
+const GAS_ON_BALANCE: Gas = Gas::from_tgas(15);
 pub const MAX_BATCH: usize = 5;
 pub const MIN_TICKER_LEN: usize = 2;
 pub const MAX_TICKER_LEN: usize = 16;
@@ -30,6 +60,37 @@ pub const MAX_TICKER_LEN: usize = 16;
 enum StorageKey {
     Relayers,
     Balances,
+    Held,
+}
+
+/// A launch whose supply sits in the vault until it is listed (or released) to its creator.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Held {
+    pub creator: AccountId,
+    pub ticker: String,
+    /// Pool id once `create_pool` succeeded.
+    pub pool_id: Option<String>,
+    /// DCL position id while it is still owned by the vault (hand-off pending).
+    pub lpt_id: Option<String>,
+    /// True while a listing chain is running (blocks a second `list_on_rhea`).
+    pub listing: bool,
+}
+
+/// One-sided DCL position parameters for `list_on_rhea` (computed off-chain, checked here).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct ListParams {
+    /// Token amount placed in the pool; the rest of the vault's balance goes to the creator.
+    pub pool_amount: U128,
+    /// Opening point (current price) of the new pool.
+    pub init_point: i32,
+    pub left_point: i32,
+    pub right_point: i32,
+    /// NEAR attached to `create_pool` (unused part is refunded by Rhea to the vault).
+    pub pool_deposit: U128,
+    /// NEAR for the creator's DCL storage (needed to own the position); 0 if already registered.
+    pub creator_dcl_storage: U128,
 }
 
 /// Token parameters for a sponsored launch.
@@ -47,11 +108,30 @@ pub struct TokenArgs {
     pub total_supply: U128,
     /// Optional site config JSON stored by the factory for the token page.
     pub site: Option<String>,
+    /// Mint the supply to the vault so `list_on_rhea` can seed a Rhea pool (default false).
+    #[serde(default)]
+    pub hold_for_listing: Option<bool>,
 }
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct LaunchVault {
+    owner_id: AccountId,
+    authorized_relayers: IterableSet<AccountId>,
+    user_balances: LookupMap<AccountId, u128>,
+    platform_fee_bps: u16,
+    treasury_balance: u128,
+    ft_factory: AccountId,
+    pending_owner: Option<AccountId>,
+    paused: bool,
+    dcl: AccountId,
+    wnear: AccountId,
+    held: LookupMap<AccountId, Held>,
+}
+
+/// v0.2 state, for `migrate`.
+#[near(serializers = [borsh])]
+pub struct LaunchVaultV2 {
     owner_id: AccountId,
     authorized_relayers: IterableSet<AccountId>,
     user_balances: LookupMap<AccountId, u128>,
@@ -117,10 +197,13 @@ impl LaunchVault {
             ft_factory,
             pending_owner: None,
             paused: false,
+            dcl: default_dcl(),
+            wnear: default_wnear(),
+            held: LookupMap::new(StorageKey::Held),
         }
     }
 
-    /// Upgrade from the v0.1 layout. Balances, relayers and treasury are kept.
+    /// Upgrade from the v0.1 / v0.2 layouts. Balances, relayers and treasury are kept.
     #[private]
     #[init(ignore_state)]
     pub fn migrate() -> Self {
@@ -128,6 +211,22 @@ impl LaunchVault {
         let raw = env::storage_read(b"STATE").unwrap_or_else(|| env::panic_str("no state to migrate"));
         if let Ok(cur) = LaunchVault::try_from_slice(&raw) {
             return cur; // already on this layout
+        }
+        let (dcl, wnear, held) = (default_dcl(), default_wnear(), LookupMap::new(StorageKey::Held));
+        if let Ok(o) = LaunchVaultV2::try_from_slice(&raw) {
+            return Self {
+                owner_id: o.owner_id,
+                authorized_relayers: o.authorized_relayers,
+                user_balances: o.user_balances,
+                platform_fee_bps: o.platform_fee_bps,
+                treasury_balance: o.treasury_balance,
+                ft_factory: o.ft_factory,
+                pending_owner: o.pending_owner,
+                paused: o.paused,
+                dcl,
+                wnear,
+                held,
+            };
         }
         let o = LaunchVaultV1::try_from_slice(&raw).unwrap_or_else(|_| env::panic_str("unknown state layout"));
         Self {
@@ -139,6 +238,9 @@ impl LaunchVault {
             ft_factory: o.ft_factory,
             pending_owner: None,
             paused: false,
+            dcl,
+            wnear,
+            held,
         }
     }
 
@@ -235,11 +337,18 @@ impl LaunchVault {
         deposit: U128,
         fee: U128,
         ticker: String,
+        hold: Option<bool>,
         #[callback_result] result: Result<Option<AccountId>, PromiseError>,
     ) -> Option<AccountId> {
         match result {
             Ok(Some(token_id)) => {
                 self.treasury_balance = self.treasury_balance.checked_add(fee.0).expect("overflow");
+                if hold == Some(true) {
+                    self.held.insert(
+                        token_id.clone(),
+                        Held { creator: user_id.clone(), ticker: ticker.clone(), pool_id: None, lpt_id: None, listing: false },
+                    );
+                }
                 emit(
                     "launch",
                     json!({ "account_id": user_id, "ticker": ticker, "token_id": token_id, "deposit": deposit, "fee": fee }),
@@ -258,6 +367,208 @@ impl LaunchVault {
                 );
                 None
             }
+        }
+    }
+
+
+    // ---------- Rhea listing ----------
+
+    /// Relayer only. Lists a held launch on Rhea DCL: registers storage, creates the pool, adds
+    /// `pool_amount` one-sided and hands the position + all remaining tokens to the creator.
+    /// Debits `pool_deposit + creator_dcl_storage + 2 token registrations` from the creator's credit.
+    pub fn list_on_rhea(&mut self, user_id: AccountId, token_id: AccountId, params: ListParams) -> Promise {
+        self.assert_relayer();
+        self.assert_not_paused();
+        let mut h = self.held.get(&token_id).cloned().unwrap_or_else(|| env::panic_str("token is not held for listing"));
+        require!(h.creator == user_id, "user is not the token's creator");
+        require!(!h.listing, "listing already in progress");
+        require!(h.pool_id.is_none(), "token is already listed; use release");
+        let token_is_x = token_id < self.wnear;
+        check_points(token_is_x, params.init_point, params.left_point, params.right_point);
+        require!(params.pool_amount.0 > 0, "pool_amount must be > 0");
+        require!(params.pool_deposit.0 > 0 && params.pool_deposit.0 <= MAX_POOL_DEPOSIT, "pool_deposit out of range");
+        require!(params.creator_dcl_storage.0 <= MAX_DCL_STORAGE, "creator_dcl_storage out of range");
+        let cost = listing_cost(&params);
+        self.debit(&user_id, cost);
+        h.listing = true;
+        self.held.insert(token_id.clone(), h);
+        emit("list_start", json!({ "account_id": user_id, "token_id": token_id, "cost": U128(cost) }));
+
+        let (x, y) = if token_is_x { (token_id.clone(), self.wnear.clone()) } else { (self.wnear.clone(), token_id.clone()) };
+        let reg = Promise::new(token_id.clone())
+            .function_call("storage_deposit", json!({ "account_id": self.dcl, "registration_only": true }).to_string().into_bytes(), NearToken::from_yoctonear(TOKEN_STORAGE), GAS_STORAGE)
+            .function_call("storage_deposit", json!({ "account_id": user_id, "registration_only": true }).to_string().into_bytes(), NearToken::from_yoctonear(TOKEN_STORAGE), GAS_STORAGE);
+        let pool = Promise::new(self.dcl.clone()).function_call(
+            "create_pool",
+            json!({ "token_a": x, "token_b": y, "fee": DCL_FEE, "init_point": params.init_point }).to_string().into_bytes(),
+            NearToken::from_yoctonear(params.pool_deposit.0),
+            GAS_CREATE_POOL,
+        );
+        let vault_topup = Promise::new(self.dcl.clone()).function_call(
+            "storage_deposit",
+            json!({ "account_id": env::current_account_id(), "registration_only": false }).to_string().into_bytes(),
+            NearToken::from_yoctonear(VAULT_DCL_TOPUP),
+            GAS_STORAGE,
+        );
+        let mut joint = reg.and(pool).and(vault_topup);
+        if params.creator_dcl_storage.0 > 0 {
+            joint = joint.and(Promise::new(self.dcl.clone()).function_call(
+                "storage_deposit",
+                json!({ "account_id": user_id, "registration_only": false }).to_string().into_bytes(),
+                NearToken::from_yoctonear(params.creator_dcl_storage.0),
+                GAS_STORAGE,
+            ));
+        }
+        joint.then(
+            Self::ext(env::current_account_id())
+                .with_static_gas(GAS_ON_PREPARED)
+                .with_unused_gas_weight(1)
+                .on_list_prepared(user_id, token_id, params),
+        )
+    }
+
+    #[private]
+    pub fn on_list_prepared(&mut self, user_id: AccountId, token_id: AccountId, params: ListParams) -> Promise {
+        let n = env::promise_results_count();
+        let mut ok = true;
+        let mut pool_id: Option<String> = None;
+        for i in 0..n {
+            match env::promise_result_checked(i, 1024) {
+                Ok(bytes) => {
+                    if i == 1 {
+                        pool_id = near_sdk::serde_json::from_slice::<String>(&bytes).ok();
+                    }
+                }
+                Err(_) => {
+                    ok = false;
+                    // Refund the parts that came back to the vault (failed calls return their deposit).
+                    let back = match i {
+                        1 => params.pool_deposit.0,
+                        2 => VAULT_DCL_TOPUP,
+                        3 => params.creator_dcl_storage.0,
+                        _ => 0,
+                    };
+                    if back > 0 {
+                        let bal = self.balance_of(&user_id).checked_add(back).expect("overflow");
+                        self.user_balances.insert(user_id.clone(), bal);
+                    }
+                }
+            }
+        }
+        let Some(pool_id) = pool_id.filter(|_| ok) else {
+            return self.fail_listing(&token_id, "prepare");
+        };
+        let mut h = self.held.get(&token_id).cloned().expect("held");
+        h.pool_id = Some(pool_id.clone());
+        self.held.insert(token_id.clone(), h);
+        let token_is_x = token_id < self.wnear;
+        let (amount_x, amount_y) = if token_is_x { (params.pool_amount, U128(0)) } else { (U128(0), params.pool_amount) };
+        Promise::new(token_id.clone())
+            .function_call(
+                "ft_transfer_call",
+                json!({ "receiver_id": self.dcl, "amount": params.pool_amount, "msg": "\"Deposit\"" }).to_string().into_bytes(),
+                ONE_YOCTO,
+                GAS_FT_TRANSFER_CALL,
+            )
+            .then(Promise::new(self.dcl.clone()).function_call(
+                "add_liquidity",
+                json!({
+                    "pool_id": pool_id,
+                    "left_point": params.left_point,
+                    "right_point": params.right_point,
+                    "amount_x": amount_x,
+                    "amount_y": amount_y,
+                    "min_amount_x": "0",
+                    "min_amount_y": "0",
+                })
+                .to_string()
+                .into_bytes(),
+                NearToken::from_yoctonear(0),
+                GAS_ADD_LIQUIDITY,
+            ))
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(GAS_ON_LIQUIDITY)
+                    .with_unused_gas_weight(1)
+                    .on_liquidity_added(token_id),
+            )
+    }
+
+    #[private]
+    pub fn on_liquidity_added(&mut self, token_id: AccountId, #[callback_result] lpt: Result<String, PromiseError>) -> Promise {
+        match lpt {
+            Ok(lpt_id) => {
+                let mut h = self.held.get(&token_id).cloned().expect("held");
+                h.lpt_id = Some(lpt_id);
+                self.held.insert(token_id.clone(), h);
+                self.hand_off(&token_id, false)
+            }
+            Err(_) => self.fail_listing(&token_id, "add_liquidity"),
+        }
+    }
+
+    /// Creator, relayer or owner: (re)tries handing a held token's position and balance to its
+    /// creator, withdrawing anything left in the vault's DCL account first.
+    pub fn release(&mut self, token_id: AccountId) -> Promise {
+        let h = self.held.get(&token_id).cloned().unwrap_or_else(|| env::panic_str("token is not held"));
+        let caller = env::predecessor_account_id();
+        require!(
+            caller == h.creator || caller == self.owner_id || self.authorized_relayers.contains(&caller),
+            "only the creator, owner or a relayer"
+        );
+        require!(!h.listing || h.pool_id.is_some() || caller == self.owner_id, "listing in progress");
+        self.hand_off(&token_id, true)
+    }
+
+    /// After `withdraw_asset` (success or not): hand the position and balance over.
+    #[private]
+    pub fn on_withdrawn(&mut self, token_id: AccountId) -> Promise {
+        self.hand_off(&token_id, false)
+    }
+
+    /// Results: [nft_transfer?, ft_balance_of].
+    #[private]
+    pub fn on_hand_off(&mut self, token_id: AccountId, had_lpt: bool) -> Promise {
+        let n = env::promise_results_count();
+        let mut nft_ok = !had_lpt;
+        let mut balance: u128 = 0;
+        for i in 0..n {
+            let r = env::promise_result_checked(i, 256);
+            if had_lpt && i == 0 {
+                nft_ok = r.is_ok();
+            } else if let Ok(b) = r {
+                balance = near_sdk::serde_json::from_slice::<U128>(&b).map(|v| v.0).unwrap_or(0);
+            }
+        }
+        let mut h = self.held.get(&token_id).cloned().expect("held");
+        let creator = h.creator.clone();
+        let lpt = h.lpt_id.clone();
+        if nft_ok {
+            h.lpt_id = None;
+        }
+        let done = nft_ok;
+        h.listing = false;
+        if done && h.pool_id.is_some() {
+            self.held.remove(&token_id);
+        } else {
+            self.held.insert(token_id.clone(), h.clone());
+        }
+        emit(
+            if h.pool_id.is_some() && done { "listed" } else { "released" },
+            json!({
+                "account_id": creator, "token_id": token_id, "pool_id": h.pool_id, "lpt_id": lpt,
+                "position_to_creator": had_lpt && nft_ok, "tokens_to_creator": U128(balance),
+            }),
+        );
+        if balance > 0 {
+            Promise::new(token_id).function_call(
+                "ft_transfer",
+                json!({ "receiver_id": creator, "amount": U128(balance), "memo": "Yeetpad: your tokens" }).to_string().into_bytes(),
+                ONE_YOCTO,
+                GAS_FT_TRANSFER,
+            )
+        } else {
+            Promise::new(env::current_account_id())
         }
     }
 
@@ -295,6 +606,14 @@ impl LaunchVault {
     pub fn set_ft_factory(&mut self, account_id: AccountId) {
         self.assert_owner();
         self.ft_factory = account_id;
+    }
+
+    /// Rhea DCL exchange and wNEAR used by `list_on_rhea`.
+    pub fn set_dcl(&mut self, dcl: AccountId, wnear: AccountId) {
+        self.assert_owner();
+        emit("dcl_set", json!({ "dcl": dcl, "wnear": wnear }));
+        self.dcl = dcl;
+        self.wnear = wnear;
     }
 
     pub fn set_paused(&mut self, paused: bool) {
@@ -341,6 +660,10 @@ impl LaunchVault {
         U128(self.balance_of(&account_id))
     }
 
+    pub fn get_held(&self, token_id: AccountId) -> Option<Held> {
+        self.held.get(&token_id).cloned()
+    }
+
     pub fn get_relayers(&self) -> Vec<AccountId> {
         self.authorized_relayers.iter().cloned().collect()
     }
@@ -354,13 +677,65 @@ impl LaunchVault {
             "treasury_balance": U128(self.treasury_balance),
             "paused": self.paused,
             "max_batch": MAX_BATCH,
+            "dcl": self.dcl,
+            "wnear": self.wnear,
             "version": env!("CARGO_PKG_VERSION"),
         })
     }
 }
 
 impl LaunchVault {
+    /// Sends the position (if the vault still owns one) and the vault's whole token balance to the
+    /// creator. `withdraw` first pulls any token deposit left in the vault's DCL account.
+    fn hand_off(&mut self, token_id: &AccountId, withdraw: bool) -> Promise {
+        let h = self.held.get(token_id).cloned().expect("held");
+        let me = env::current_account_id();
+        if withdraw {
+            return Promise::new(self.dcl.clone())
+                .function_call(
+                    "withdraw_asset",
+                    json!({ "token_id": token_id }).to_string().into_bytes(),
+                    NearToken::from_yoctonear(0),
+                    GAS_WITHDRAW_ASSET,
+                )
+                .then(Self::ext(me).with_static_gas(GAS_ON_LIQUIDITY).with_unused_gas_weight(1).on_withdrawn(token_id.clone()));
+        }
+        // Built only now: near-sdk schedules a Promise when it is dropped.
+        let balance = Promise::new(token_id.clone()).function_call(
+            "ft_balance_of",
+            json!({ "account_id": me }).to_string().into_bytes(),
+            NearToken::from_yoctonear(0),
+            GAS_VIEW,
+        );
+        let had_lpt = h.lpt_id.is_some();
+        let chain = match &h.lpt_id {
+            Some(lpt) => Promise::new(self.dcl.clone())
+                .function_call(
+                    "nft_transfer",
+                    json!({ "receiver_id": h.creator, "token_id": lpt }).to_string().into_bytes(),
+                    ONE_YOCTO,
+                    GAS_NFT_TRANSFER,
+                )
+                .and(balance),
+            None => balance,
+        };
+        chain.then(
+            Self::ext(me)
+                .with_static_gas(GAS_ON_BALANCE)
+                .with_unused_gas_weight(1)
+                .on_hand_off(token_id.clone(), had_lpt),
+        )
+    }
+
+    fn fail_listing(&mut self, token_id: &AccountId, step: &str) -> Promise {
+        let h = self.held.get(token_id).cloned().expect("held");
+        emit("list_failed", json!({ "account_id": h.creator, "token_id": token_id, "step": step }));
+        log!("listing {} failed at {}; handing tokens to the creator", token_id, step);
+        self.hand_off(token_id, true)
+    }
+
     fn launch_one(&mut self, user_id: &AccountId, token: TokenArgs, deposit: U128, fee: u128) -> Promise {
+        let hold = token.hold_for_listing == Some(true);
         let symbol = token.symbol.clone().unwrap_or_else(|| token.ticker.to_uppercase());
         let metadata = json!({
             "spec": "ft-1.0.0",
@@ -384,6 +759,7 @@ impl LaunchVault {
                     "total_supply": token.total_supply,
                     "owner_id": user_id,
                     "site": token.site,
+                    "mint_to": if hold { Some(env::current_account_id()) } else { None },
                 })
                 .to_string()
                 .into_bytes(),
@@ -395,7 +771,7 @@ impl LaunchVault {
                 Self::ext(env::current_account_id())
                     .with_static_gas(GAS_FOR_LAUNCH_CALLBACK)
                     .with_unused_gas_weight(0)
-                    .on_launch_complete(user_id.clone(), deposit, U128(fee), token.ticker),
+                    .on_launch_complete(user_id.clone(), deposit, U128(fee), token.ticker, Some(hold)),
             )
     }
 
@@ -446,6 +822,36 @@ impl LaunchVault {
     }
 }
 
+fn default_dcl() -> AccountId {
+    if env::current_account_id().as_str().ends_with(".testnet") { "dclv2.ref-dev.testnet" } else { "dclv2.ref-labs.near" }
+        .parse()
+        .unwrap()
+}
+
+fn default_wnear() -> AccountId {
+    if env::current_account_id().as_str().ends_with(".testnet") { "wrap.testnet" } else { "wrap.near" }.parse().unwrap()
+}
+
+/// NEAR the creator pays for one listing (on top of the launch deposit).
+pub fn listing_cost(p: &ListParams) -> u128 {
+    p.pool_deposit.0 + p.creator_dcl_storage.0 + VAULT_DCL_TOPUP + 2 * TOKEN_STORAGE
+}
+
+/// One-sided range checks. Token as X: the whole range sits above the price (only X in it).
+/// Token as Y: the range sits at or below the price (only Y in it). All points on the fee tier grid.
+pub fn check_points(token_is_x: bool, init: i32, left: i32, right: i32) {
+    for p in [init, left, right] {
+        require!(p % DCL_POINT_DELTA == 0, "points must be multiples of 200");
+        require!((-DCL_MAX_POINT..=DCL_MAX_POINT).contains(&p), "point out of range");
+    }
+    require!(left < right, "left_point must be < right_point");
+    if token_is_x {
+        require!(left > init, "token is X: left_point must be above init_point");
+    } else {
+        require!(right <= init, "token is Y: right_point must be <= init_point");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,13 +876,163 @@ mod tests {
     }
 
     fn tok(t: &str) -> TokenArgs {
-        TokenArgs { ticker: t.into(), name: "Moon".into(), symbol: None, icon: None, decimals: None, total_supply: U128(1), site: None }
+        TokenArgs { ticker: t.into(), name: "Moon".into(), symbol: None, icon: None, decimals: None, total_supply: U128(1), site: None, hold_for_listing: None }
     }
 
     /// Deposit and return the credited balance (gross minus first-deposit storage).
     fn deposit(v: &mut LaunchVault, who: &str, near: u128) -> u128 {
         ctx(who, NearToken::from_near(near));
         v.deposit_credits().0
+    }
+
+
+    fn params() -> ListParams {
+        ListParams {
+            pool_amount: U128(900),
+            init_point: 0,
+            left_point: 200,
+            right_point: 500_000,
+            pool_deposit: U128(NearToken::from_millinear(20).as_yoctonear()),
+            creator_dcl_storage: U128(NearToken::from_millinear(500).as_yoctonear()),
+        }
+    }
+
+    fn with_results(results: Vec<near_sdk::PromiseResult>) {
+        testing_env!(
+            VMContextBuilder::new()
+                .current_account_id(acc("vault.test.near"))
+                .predecessor_account_id(acc("vault.test.near"))
+                .build(),
+            near_sdk::test_vm_config(),
+            near_sdk::RuntimeFeesConfig::test(),
+            Default::default(),
+            results
+        );
+    }
+
+    fn ok(b: &[u8]) -> near_sdk::PromiseResult {
+        near_sdk::PromiseResult::Successful(b.to_vec())
+    }
+
+    /// Launch "moon" held for listing and return the token id.
+    fn held_launch(v: &mut LaunchVault) -> AccountId {
+        ctx("relayer.near", NearToken::from_near(0));
+        let mut t = tok("moon");
+        t.hold_for_listing = Some(true);
+        let _ = v.execute_sponsored_launch(acc("alice.near"), t, U128(NearToken::from_near(2).as_yoctonear()));
+        ctx("vault.test.near", NearToken::from_near(0));
+        let id = acc("moon.factory.near");
+        v.on_launch_complete(acc("alice.near"), U128(0), U128(0), "moon".into(), Some(true), Ok(Some(id.clone())));
+        id
+    }
+
+    #[test]
+    fn rhea_listing_happy_path() {
+        let mut v = setup();
+        let b = deposit(&mut v, "alice.near", 10);
+        let id = held_launch(&mut v);
+        assert_eq!(v.get_held(id.clone()).unwrap().creator, acc("alice.near"));
+        let after_launch = v.get_balance(acc("alice.near")).0;
+        assert!(after_launch < b);
+        ctx("relayer.near", NearToken::from_near(0));
+        let _ = v.list_on_rhea(acc("alice.near"), id.clone(), params());
+        assert_eq!(v.get_balance(acc("alice.near")).0, after_launch - listing_cost(&params()));
+        assert!(v.get_held(id.clone()).unwrap().listing);
+        let pool = "moon.factory.near|wrap.near|10000".to_string();
+        with_results(vec![ok(b""), ok(&near_sdk::serde_json::to_vec(&pool).unwrap()), ok(b"{}"), ok(b"{}")]);
+        let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
+        assert_eq!(v.get_held(id.clone()).unwrap().pool_id, Some(pool));
+        with_results(vec![]);
+        let _ = v.on_liquidity_added(id.clone(), Ok("moon.factory.near|wrap.near|10000#7".into()));
+        assert!(v.get_held(id.clone()).unwrap().lpt_id.is_some());
+        with_results(vec![ok(b""), ok(b"\"100\"")]);
+        let _ = v.on_hand_off(id.clone(), true);
+        assert!(v.get_held(id).is_none(), "done listings are forgotten");
+    }
+
+    #[test]
+    fn rhea_prepare_failure_refunds_and_releases() {
+        let mut v = setup();
+        deposit(&mut v, "alice.near", 10);
+        let id = held_launch(&mut v);
+        ctx("relayer.near", NearToken::from_near(0));
+        let _ = v.list_on_rhea(acc("alice.near"), id.clone(), params());
+        let after = v.get_balance(acc("alice.near")).0;
+        with_results(vec![ok(b""), near_sdk::PromiseResult::Failed, ok(b"{}"), near_sdk::PromiseResult::Failed]);
+        let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
+        assert_eq!(v.get_balance(acc("alice.near")).0, after + params().pool_deposit.0 + params().creator_dcl_storage.0);
+        with_results(vec![ok(b"\"1000\"")]);
+        let _ = v.on_hand_off(id.clone(), false);
+        let h = v.get_held(id).unwrap();
+        assert!(!h.listing && h.pool_id.is_none());
+    }
+
+    #[test]
+    fn nft_transfer_failure_keeps_position_for_release() {
+        let mut v = setup();
+        deposit(&mut v, "alice.near", 10);
+        let id = held_launch(&mut v);
+        ctx("relayer.near", NearToken::from_near(0));
+        let _ = v.list_on_rhea(acc("alice.near"), id.clone(), params());
+        with_results(vec![ok(b""), ok(b"\"p\""), ok(b"{}"), ok(b"{}")]);
+        let _ = v.on_list_prepared(acc("alice.near"), id.clone(), params());
+        with_results(vec![]);
+        let _ = v.on_liquidity_added(id.clone(), Ok("p#1".into()));
+        with_results(vec![near_sdk::PromiseResult::Failed, ok(b"\"5\"")]);
+        let _ = v.on_hand_off(id.clone(), true);
+        let h = v.get_held(id.clone()).unwrap();
+        assert_eq!(h.lpt_id.as_deref(), Some("p#1"));
+        ctx("alice.near", NearToken::from_near(0));
+        let _ = v.release(id); // creator may retry
+    }
+
+    #[test]
+    #[should_panic(expected = "user is not the token's creator")]
+    fn rhea_wrong_creator() {
+        let mut v = setup();
+        deposit(&mut v, "alice.near", 10);
+        let id = held_launch(&mut v);
+        ctx("relayer.near", NearToken::from_near(0));
+        let _ = v.list_on_rhea(acc("bob.near"), id, params());
+    }
+
+    #[test]
+    #[should_panic(expected = "only authorized relayers")]
+    fn rhea_relayer_only() {
+        let mut v = setup();
+        deposit(&mut v, "alice.near", 10);
+        let id = held_launch(&mut v);
+        ctx("alice.near", NearToken::from_near(0));
+        let _ = v.list_on_rhea(acc("alice.near"), id, params());
+    }
+
+    #[test]
+    #[should_panic(expected = "only the creator, owner or a relayer")]
+    fn release_guarded() {
+        let mut v = setup();
+        deposit(&mut v, "alice.near", 10);
+        let id = held_launch(&mut v);
+        ctx("mallory.near", NearToken::from_near(0));
+        let _ = v.release(id);
+    }
+
+    #[test]
+    fn points_checks() {
+        check_points(true, 0, 200, 500_000);
+        check_points(false, 0, -500_000, 0);
+        let bad = [(true, 0, 0, 200), (false, 0, -200, 200), (true, 0, 100, 500), (true, 0, 200, 900_000)];
+        for (x, i, l, r) in bad {
+            assert!(std::panic::catch_unwind(|| check_points(x, i, l, r)).is_err(), "{x} {i} {l} {r}");
+        }
+    }
+
+    #[test]
+    fn non_held_launch_not_recorded() {
+        let mut v = setup();
+        deposit(&mut v, "alice.near", 10);
+        ctx("vault.test.near", NearToken::from_near(0));
+        v.on_launch_complete(acc("alice.near"), U128(0), U128(0), "aa".into(), None, Ok(Some(acc("aa.factory.near"))));
+        assert!(v.get_held(acc("aa.factory.near")).is_none());
     }
 
     #[test]
@@ -539,7 +1095,7 @@ mod tests {
         let _ = v.execute_sponsored_launch(acc("alice.near"), tok("moon"), U128(dep));
         assert_eq!(v.get_balance(acc("alice.near")).0, b - dep - dep / 100);
         ctx("vault.test.near", NearToken::from_near(0));
-        let r = v.on_launch_complete(acc("alice.near"), U128(dep), U128(dep / 100), "moon".into(), Err(PromiseError::Failed));
+        let r = v.on_launch_complete(acc("alice.near"), U128(dep), U128(dep / 100), "moon".into(), None, Err(PromiseError::Failed));
         assert!(r.is_none());
         assert_eq!(v.get_balance(acc("alice.near")).0, b);
     }
@@ -555,9 +1111,9 @@ mod tests {
         let per = dep + dep / 100;
         assert_eq!(v.get_balance(acc("alice.near")).0, b - 3 * per);
         ctx("vault.test.near", NearToken::from_near(0));
-        v.on_launch_complete(acc("alice.near"), U128(dep), U128(dep / 100), "aa".into(), Ok(Some(acc("aa.factory.near"))));
-        v.on_launch_complete(acc("alice.near"), U128(dep), U128(dep / 100), "bb".into(), Ok(None));
-        v.on_launch_complete(acc("alice.near"), U128(dep), U128(dep / 100), "cc".into(), Err(PromiseError::Failed));
+        v.on_launch_complete(acc("alice.near"), U128(dep), U128(dep / 100), "aa".into(), None, Ok(Some(acc("aa.factory.near"))));
+        v.on_launch_complete(acc("alice.near"), U128(dep), U128(dep / 100), "bb".into(), None, Ok(None));
+        v.on_launch_complete(acc("alice.near"), U128(dep), U128(dep / 100), "cc".into(), None, Err(PromiseError::Failed));
         assert_eq!(v.get_balance(acc("alice.near")).0, b - per);
         assert_eq!(v.get_config()["treasury_balance"], json!(U128(dep / 100)));
     }
