@@ -85,10 +85,37 @@ export const GenerateResponse = z.object({
 });
 export type GenerateResponse = z.infer<typeof GenerateResponse>;
 
+/** Where a launch is listed. none = our factory token only; rhea = our token + Rhea DCL pool (vault);
+ *  nearly = Nearly's factory creates the token, signed by the creator's wallet. */
+export const ListOn = z.enum(["none", "rhea", "nearly"]);
+export type ListOn = z.infer<typeof ListOn>;
+
+export const RheaOptions = z.object({
+  /** Opening fully-diluted valuation in NEAR; sets the pool's starting price. */
+  openingFdvNear: z.number().positive().max(1e9).optional(),
+  /** Share of supply sent to the creator instead of the pool (0-90). */
+  creatorPct: z.number().min(0).max(90).optional(),
+});
+export type RheaOptions = z.infer<typeof RheaOptions>;
+
+export const Listing = z.object({
+  venue: z.enum(["rhea", "nearly"]),
+  ok: z.boolean(),
+  tokenId: z.string().nullable(),
+  poolId: z.string().nullable(),
+  lptId: z.string().nullable(),
+  url: z.string().url().nullable(),
+  txHash: z.string().nullable(),
+  error: z.string().nullable(),
+});
+export type Listing = z.infer<typeof Listing>;
+
 export const LaunchRequest = z.object({
   /** Optional: the account comes from the session; if sent it must match it. */
   ownerWallet: NearAccountId.optional(),
   idea: LaunchIdea,
+  listOn: z.enum(["none", "rhea"]).optional(),
+  rhea: RheaOptions.optional(),
 });
 export type LaunchRequest = z.infer<typeof LaunchRequest>;
 
@@ -98,12 +125,15 @@ export const LaunchResponse = z.object({
   explorerUrl: z.string().url(),
   siteConfig: SiteConfig,
   siteUrl: z.string().url().optional(),
+  listing: Listing.nullable().optional(),
 });
 export type LaunchResponse = z.infer<typeof LaunchResponse>;
 
 export const BatchLaunchRequest = z.object({
   ownerWallet: NearAccountId.optional(),
   ideas: z.array(LaunchIdea).min(1).max(MAX_BATCH),
+  listOn: z.enum(["none", "rhea"]).optional(),
+  rhea: RheaOptions.optional(),
 });
 export type BatchLaunchRequest = z.infer<typeof BatchLaunchRequest>;
 
@@ -114,6 +144,7 @@ export const BatchLaunchItem = z.object({
   slug: z.string().nullable().optional(),
   siteUrl: z.string().url().nullable(),
   error: z.string().nullable(),
+  listing: Listing.nullable().optional(),
 });
 export type BatchLaunchItem = z.infer<typeof BatchLaunchItem>;
 
@@ -138,6 +169,9 @@ export const LaunchedToken = z.object({
   colors: LaunchIdea.shape.colors.nullable(),
   siteUrl: z.string().url(),
   explorerUrl: z.string().url(),
+  /** Where it trades: our factory token (yeetpad), listed on Rhea, or a Nearly token. */
+  venue: z.enum(["yeetpad", "rhea", "nearly"]).optional(),
+  venueUrl: z.string().url().nullable().optional(),
 });
 export type LaunchedToken = z.infer<typeof LaunchedToken>;
 
@@ -277,3 +311,49 @@ export interface MeResponse {
   whitelisted: boolean;
   locked: boolean;
 }
+
+// ---------- venue quotes + Nearly ----------
+
+export const QuoteRequest = z.object({
+  ideas: z.array(LaunchIdea).min(1).max(MAX_BATCH),
+  listOn: ListOn,
+  rhea: RheaOptions.optional(),
+});
+export type QuoteRequest = z.infer<typeof QuoteRequest>;
+
+export const QuoteItem = z.object({
+  ticker: z.string(),
+  /** yoctoNEAR */
+  total: z.string(),
+  parts: z.record(z.string(), z.string()),
+  /** vault credit (none/rhea) or the creator's wallet (nearly) */
+  paidFrom: z.enum(["credit", "wallet"]),
+});
+export const QuoteResponse = z.object({
+  listOn: ListOn,
+  items: z.array(QuoteItem),
+  total: z.string(),
+  notes: z.array(z.string()),
+  rhea: z.object({ openingFdvNear: z.number(), creatorPct: z.number(), initPoint: z.number().nullable() }).optional(),
+});
+export type QuoteResponse = z.infer<typeof QuoteResponse>;
+
+export const NearlyPrepareRequest = z.object({ ideas: z.array(LaunchIdea).min(1).max(MAX_BATCH) });
+export const NearlyLaunchTx = z.object({
+  ticker: z.string(),
+  slug: z.string(),
+  receiverId: z.string(),
+  methodName: z.literal("launch"),
+  args: z.record(z.string(), z.unknown()),
+  gas: z.string(),
+  deposit: z.string(),
+});
+export type NearlyLaunchTx = z.infer<typeof NearlyLaunchTx>;
+export const NearlyPrepareResponse = z.object({ factory: z.string(), chunk: z.number(), txs: z.array(NearlyLaunchTx), total: z.string() });
+export type NearlyPrepareResponse = z.infer<typeof NearlyPrepareResponse>;
+
+export const NearlyFinalizeRequest = z.object({
+  items: z.array(z.object({ ticker: Ticker, txHash: z.string().min(20).max(64) })).min(1).max(MAX_BATCH),
+});
+export const NearlyFinalizeResponse = z.object({ results: z.array(BatchLaunchItem) });
+export type NearlyFinalizeResponse = z.infer<typeof NearlyFinalizeResponse>;

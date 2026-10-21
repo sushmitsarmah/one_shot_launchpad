@@ -20,11 +20,21 @@ import {
   type WaitlistResponse,
   type GenerateResponse,
   type LaunchResponse,
+  type Listing,
+  type RheaOptions,
+  NearlyFinalizeRequest,
+  NearlyPrepareRequest,
+  QuoteRequest,
+  type NearlyFinalizeResponse,
+  type NearlyLaunchTx,
+  type NearlyPrepareResponse,
+  type QuoteResponse,
 } from "@osl/schema";
+import { buildListParams, computePoints, listingCost, rheaPoolUrl } from "./rhea";
 import { config } from "./config";
 import { generateIdeas } from "./llm";
 import { tokenIconDataUri } from "./icon";
-import { buildSiteConfig, compactSite, findSite, getSite, getViews, kvStore, putSite, saveSite, siteStoreKind, siteUrl } from "./sites";
+import { buildSiteConfig, claimSlug, compactSite, findSite, getSite, getViews, kvStore, putSite, saveSite, siteStoreKind, siteUrl } from "./sites";
 import {
   WAITLIST_MAX_BODY,
   addToWaitlist,
@@ -52,6 +62,10 @@ import {
   isTickerTaken,
   type TokenArgs,
   type TokenRecord,
+  creatorDclStorageNeeded,
+  listOnRhea,
+  nearlyLaunchesInTx,
+  quoteNearly,
 } from "./near";
 
 type Env = { Bindings: Record<string, unknown>; Variables: { account: string } };
@@ -99,6 +113,10 @@ app.get("/api/health", (c) =>
     factory: config.factoryContract,
     aiComputeCost: config.aiComputeCostYocto,
     maxBatch: 5,
+    venues: {
+      rhea: { dcl: config.dclContract, wnear: config.wnearContract, defaultFdvNear: config.rheaDefaultFdvNear },
+      nearly: { factory: config.nearlyFactory, chunk: config.nearlyBatchChunk },
+    },
     siteStore: siteStoreKind(),
     siteBase: config.siteBase,
     locked: config.locked,
@@ -193,31 +211,74 @@ app.post("/api/launch", requireSession, requireAllowed, async (c) => {
   if (await isTickerTaken(idea.ticker)) {
     return c.json({ error: `ticker "${idea.ticker}" is taken (${tokenAccount}); edit it and retry` }, 409);
   }
+  const rhea = body.data.listOn === "rhea";
   const deposit = await getRequiredLaunchDeposit();
+  const listFee = rhea ? listingCost(await creatorDclStorageNeeded(ownerWallet)) : 0n;
   const bal = await getVaultBalance(ownerWallet);
-  if (bal < deposit) {
-    return c.json({ error: `insufficient vault balance: launch needs ~${formatNear(deposit)} NEAR, have ${formatNear(bal)}` }, 402);
+  if (bal < deposit + listFee) {
+    return c.json({ error: `insufficient vault balance: launch${rhea ? " + Rhea listing" : ""} needs ~${formatNear(deposit + listFee)} NEAR, have ${formatNear(bal)}` }, 402);
   }
 
   const icon = tokenIconDataUri(idea);
-  const { tokenId, txHash } = await executeSponsoredLaunch(ownerWallet, tokenArgs(idea, icon), deposit);
+  const { tokenId, txHash } = await executeSponsoredLaunch(ownerWallet, tokenArgs(idea, icon, rhea), deposit);
   if (!tokenId) {
     return c.json({ error: "launch failed on-chain; your balance was refunded", txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}` }, 502);
   }
 
-  const siteConfig = await putSite(buildSiteConfig(ownerWallet, idea, tokenId, { txHash, icon }));
+  const listing = rhea ? await listRhea(ownerWallet, tokenId, body.data.rhea) : null;
+  const siteConfig = await putSite(withBuyUrl(buildSiteConfig(ownerWallet, idea, tokenId, { txHash, icon }), listing));
   const res: LaunchResponse = {
     tokenId,
     txHash,
     explorerUrl: `${config.explorerBase}/txns/${txHash}`,
     siteConfig,
     siteUrl: siteUrl(siteConfig.slug ?? idea.ticker),
+    listing,
   };
   return c.json(res);
 });
 
-function tokenArgs(idea: import("@osl/schema").LaunchIdea, icon: string): TokenArgs {
+/** Lists a held token on Rhea DCL via the vault and records it (KV `listing:<ticker>`). */
+async function listRhea(owner: string, tokenId: string, opts: RheaOptions | undefined): Promise<Listing> {
+  const ticker = tokenId.split(".")[0];
+  try {
+    const params = buildListParams({
+      tokenId,
+      supply: BigInt(config.tokenTotalSupply),
+      decimals: config.tokenDecimals,
+      fdvNear: opts?.openingFdvNear ?? config.rheaDefaultFdvNear,
+      creatorPct: opts?.creatorPct ?? 0,
+      creatorDclStorage: await creatorDclStorageNeeded(owner),
+    });
+    const { tokenIsX: _x, ...args } = params;
+    const r = await listOnRhea(owner, tokenId, args);
+    const listing: Listing = {
+      venue: "rhea",
+      ok: r.ok,
+      tokenId,
+      poolId: r.poolId,
+      lptId: r.lptId,
+      url: r.poolId ? rheaPoolUrl(r.poolId) : null,
+      txHash: r.txHash,
+      error: r.ok ? null : `listing failed at ${r.failedStep ?? "hand-off"}; ${r.positionToCreator ? "" : "tokens were sent to your wallet"}`.trim(),
+    };
+    await kvStore().put(`listing:${ticker}`, JSON.stringify(listing));
+    return listing;
+  } catch (e) {
+    const listing: Listing = { venue: "rhea", ok: false, tokenId, poolId: null, lptId: null, url: null, txHash: null, error: `listing not started: ${(e as Error).message}` };
+    await kvStore().put(`listing:${ticker}`, JSON.stringify(listing));
+    return listing;
+  }
+}
+
+function withBuyUrl<T extends import("@osl/schema").SiteConfig>(site: T, listing: Listing | null): T {
+  if (!listing?.ok || !listing.url) return site;
+  return { ...site, tokenLaunch: { ...site.tokenLaunch, buyUrl: listing.url } };
+}
+
+function tokenArgs(idea: import("@osl/schema").LaunchIdea, icon: string, hold = false): TokenArgs {
   return {
+    ...(hold ? { hold_for_listing: true } : {}),
     ticker: idea.ticker,
     name: idea.name,
     symbol: idea.ticker.toUpperCase(),
@@ -241,30 +302,183 @@ app.post("/api/launch/batch", requireSession, requireAllowed, async (c) => {
   const taken = (await Promise.all(tickers.map(async (t) => ((await isTickerTaken(t)) ? t : null)))).filter(Boolean);
   if (taken.length) return c.json({ error: `ticker(s) taken: ${taken.join(", ")}; edit and retry`, taken }, 409);
 
+  const rhea = body.data.listOn === "rhea";
   const deposit = await getRequiredLaunchDeposit();
-  const need = deposit * BigInt(ideas.length);
+  // First listing may register the creator on DCL (0.5); later ones in the batch don't.
+  const firstList = rhea ? listingCost(await creatorDclStorageNeeded(ownerWallet)) : 0n;
+  const nextList = rhea ? listingCost(0n) : 0n;
+  const need = deposit * BigInt(ideas.length) + (rhea ? firstList + nextList * BigInt(ideas.length - 1) : 0n);
   const bal = await getVaultBalance(ownerWallet);
   if (bal < need) {
-    return c.json({ error: `insufficient vault balance: ${ideas.length} launch(es) need ~${formatNear(need)} NEAR, have ${formatNear(bal)}` }, 402);
+    return c.json({ error: `insufficient vault balance: ${ideas.length} launch(es)${rhea ? " + Rhea listings" : ""} need ~${formatNear(need)} NEAR, have ${formatNear(bal)}` }, 402);
   }
 
   const icons = ideas.map((i) => tokenIconDataUri(i));
   const { txHash, results } = await executeSponsoredLaunchBatch(
     ownerWallet,
-    ideas.map((idea, i) => tokenArgs(idea, icons[i])),
+    ideas.map((idea, i) => tokenArgs(idea, icons[i], rhea)),
     deposit,
   );
   const out: BatchLaunchResponse["results"] = [];
   for (const [i, r] of results.entries()) {
     if (r.tokenId) {
-      const site = await putSite(buildSiteConfig(ownerWallet, ideas[i], r.tokenId, { txHash, icon: icons[i] }));
-      out.push({ ticker: r.ticker, ok: true, tokenId: r.tokenId, slug: site.slug ?? null, siteUrl: siteUrl(site.slug ?? r.ticker), error: null });
+      // One listing tx per token, sequential (each needs ~300 Tgas).
+      const listing = rhea ? await listRhea(ownerWallet, r.tokenId, body.data.rhea) : null;
+      const site = await putSite(withBuyUrl(buildSiteConfig(ownerWallet, ideas[i], r.tokenId, { txHash, icon: icons[i] }), listing));
+      out.push({ ticker: r.ticker, ok: true, tokenId: r.tokenId, slug: site.slug ?? null, siteUrl: siteUrl(site.slug ?? r.ticker), error: null, listing });
     } else {
       out.push({ ticker: r.ticker, ok: false, tokenId: null, slug: null, siteUrl: null, error: "launch failed on-chain; that item was refunded" });
     }
   }
   const res: BatchLaunchResponse = { txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}`, results: out };
   return c.json(res, out.some((r) => r.ok) ? 200 : 502);
+});
+
+// ---------- venue quotes ----------
+const NEARLY_GAS = (300n * 10n ** 12n).toString();
+const nearlyText = (idea: import("@osl/schema").LaunchIdea, website: string) =>
+  new TextEncoder().encode(idea.name + idea.ticker + idea.description + website).length;
+
+/** Estimated cost per token for a venue (from on-chain quote views) and the total. */
+app.post("/api/quote", requireSession, async (c) => {
+  const body = QuoteRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
+  const { ideas, listOn } = body.data;
+  const notes: string[] = [];
+  const items: QuoteResponse["items"] = [];
+  let total = 0n;
+  let rheaInfo: QuoteResponse["rhea"];
+  if (listOn === "nearly") {
+    for (const idea of ideas) {
+      const icon = tokenIconDataUri(idea);
+      const website = siteUrl(await claimSlug(idea.name, idea.ticker));
+      const q = await quoteNearly(new TextEncoder().encode(icon).length, nearlyText(idea, website));
+      const t = BigInt(q.total);
+      total += t;
+      items.push({ ticker: idea.ticker, total: q.total, paidFrom: "wallet", parts: { token_storage: q.token_storage, pool_create: q.pool_create, dcl_storage: q.dcl_storage } });
+    }
+    notes.push(`Nearly (${config.nearlyFactory}) creates and lists the token; your wallet signs and pays. Nearly locks the LP and takes its own trading fees.`);
+  } else {
+    const deposit = await getRequiredLaunchDeposit();
+    const dclFirst = listOn === "rhea" ? await creatorDclStorageNeeded(c.var.account) : 0n;
+    ideas.forEach((idea, i) => {
+      const parts: Record<string, string> = { token_account: deposit.toString() };
+      let t = deposit;
+      if (listOn === "rhea") {
+        const dcl = i === 0 ? dclFirst : 0n;
+        parts.pool_create = config.rheaPoolDepositYocto;
+        parts.registrations = (2n * 1_250_000_000_000_000_000_000n).toString();
+        if (dcl > 0n) parts.dcl_storage_first_time = dcl.toString();
+        t += listingCost(dcl);
+      }
+      total += t;
+      items.push({ ticker: idea.ticker, total: t.toString(), paidFrom: "credit", parts });
+    });
+    if (listOn === "rhea") {
+      const fdv = body.data.rhea?.openingFdvNear ?? config.rheaDefaultFdvNear;
+      const pct = body.data.rhea?.creatorPct ?? 0;
+      const pts = computePoints(`${ideas[0].ticker}.${config.factoryContract}`, config.wnearContract, fdv, BigInt(config.tokenTotalSupply), config.tokenDecimals);
+      rheaInfo = { openingFdvNear: fdv, creatorPct: pct, initPoint: pts.init };
+      if (dclFirst > 0n) notes.push(`First Rhea listing registers you on Rhea DCL (${formatNear(dclFirst)} NEAR storage, yours, withdrawable from Rhea).`);
+      notes.push("Rhea refunds unused pool-creation NEAR to the vault (~0.01 of the 0.02).");
+    }
+  }
+  const res: QuoteResponse = { listOn, items, total: total.toString(), notes, ...(rheaInfo ? { rhea: rheaInfo } : {}) };
+  return c.json(res);
+});
+
+// ---------- Nearly (creator's wallet signs) ----------
+const pendingKey = (ticker: string) => `nearly-pending:${ticker}`;
+const nearlyUrl = (tokenId: string) =>
+  config.nearlyTokenUrlBase ? `${config.nearlyTokenUrlBase}${tokenId}` : `${config.explorerBase}/address/${tokenId}`;
+
+/** Builds the `launch` calls for the creator's wallet; reserves slugs so the site link is known up front. */
+app.post("/api/nearly/prepare", requireSession, requireAllowed, async (c) => {
+  const body = NearlyPrepareRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
+  const owner = c.var.account;
+  const kv = kvStore();
+  const txs: NearlyLaunchTx[] = [];
+  let total = 0n;
+  for (const idea of body.data.ideas) {
+    const existing = await findSite(idea.ticker);
+    if ((existing && existing.site.ownerWallet !== owner) || (await isTickerTaken(idea.ticker))) {
+      return c.json({ error: `ticker "${idea.ticker}" is taken on Yeetpad; edit it and retry` }, 409);
+    }
+    const icon = tokenIconDataUri(idea);
+    const iconBytes = new TextEncoder().encode(icon).length;
+    if (iconBytes > 16_384) return c.json({ error: `icon for ${idea.ticker} is ${iconBytes} bytes (Nearly max 16384)` }, 400);
+    const slug = await claimSlug(idea.name, idea.ticker);
+    await kv.put(`slug:${slug}`, idea.ticker);
+    await kv.put(pendingKey(idea.ticker), JSON.stringify({ owner, idea, icon, slug, at: Date.now() }));
+    const website = siteUrl(slug);
+    const q = await quoteNearly(iconBytes, nearlyText(idea, website));
+    total += BigInt(q.total);
+    txs.push({
+      ticker: idea.ticker,
+      slug,
+      receiverId: config.nearlyFactory,
+      methodName: "launch",
+      args: {
+        args: {
+          name: idea.name,
+          symbol: idea.ticker.toUpperCase(),
+          icon,
+          description: `${idea.tagline} ${idea.description}`.slice(0, 600),
+          links: { website, twitter: null, telegram: null },
+          dev_buy: "0",
+        },
+      },
+      gas: NEARLY_GAS,
+      deposit: q.total,
+    });
+  }
+  const res: NearlyPrepareResponse = { factory: config.nearlyFactory, chunk: config.nearlyBatchChunk, txs, total: total.toString() };
+  return c.json(res);
+});
+
+/** After the wallet signed: verifies each tx on chain, then writes the site + listing records. */
+app.post("/api/nearly/finalize", requireSession, requireAllowed, async (c) => {
+  const body = NearlyFinalizeRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
+  const owner = c.var.account;
+  const kv = kvStore();
+  const results: NearlyFinalizeResponse["results"] = [];
+  const cache = new Map<string, Awaited<ReturnType<typeof nearlyLaunchesInTx>>>();
+  for (const { ticker, txHash } of body.data.items) {
+    const fail = (error: string) => results.push({ ticker, ok: false, tokenId: null, slug: null, siteUrl: null, error, listing: null });
+    const raw = await kv.get(pendingKey(ticker));
+    if (!raw) {
+      fail("no pending Nearly launch for this ticker (prepare first)");
+      continue;
+    }
+    const p = JSON.parse(raw) as { owner: string; idea: import("@osl/schema").LaunchIdea; icon: string; slug: string };
+    if (p.owner !== owner) {
+      fail("prepared by another account");
+      continue;
+    }
+    let evs = cache.get(txHash);
+    if (!evs) {
+      evs = await nearlyLaunchesInTx(txHash, owner).catch(() => []);
+      cache.set(txHash, evs);
+    }
+    const ev = evs.find((e) => e.creator === owner && e.symbol === ticker.toUpperCase());
+    if (!ev) {
+      fail("no matching Nearly launch in that transaction");
+      continue;
+    }
+    const listing: Listing = { venue: "nearly", ok: true, tokenId: ev.token, poolId: ev.pool_id ?? null, lptId: ev.lpt_id ?? null, url: nearlyUrl(ev.token), txHash, error: null };
+    const base = buildSiteConfig(owner, p.idea, ev.token, { txHash, icon: p.icon });
+    const site = await putSite({ ...base, slug: p.slug, tokenLaunch: { ...base.tokenLaunch, buyUrl: listing.url! } });
+    await kv.put(`listing:${ticker}`, JSON.stringify(listing));
+    const idxKey = `nearly-by:${owner}`;
+    const idx = JSON.parse((await kv.get(idxKey)) ?? "[]") as { ticker: string; tokenId: string; at: number }[];
+    if (!idx.some((x) => x.tokenId === ev.token)) idx.unshift({ ticker, tokenId: ev.token, at: Date.now() });
+    await kv.put(idxKey, JSON.stringify(idx.slice(0, 500)));
+    await kv.delete?.(pendingKey(ticker));
+    results.push({ ticker, ok: true, tokenId: ev.token, slug: site.slug ?? null, siteUrl: siteUrl(site.slug ?? ticker), error: null, listing });
+  }
+  return c.json({ results } satisfies NearlyFinalizeResponse, results.some((r) => r.ok) ? 200 : 400);
 });
 
 // ---------- whitelist (waitlist) ----------
@@ -386,10 +600,19 @@ app.put("/api/site/:id/settings", requireSession, requireAllowed, async (c) => {
   return c.json({ ok: true, ticker: found.ticker, gaId: gaId ?? null });
 });
 
+const getListing = async (ticker: string): Promise<Listing | null> => {
+  const raw = await kvStore().get(`listing:${ticker}`);
+  return raw ? (JSON.parse(raw) as Listing) : null;
+};
+
 const toLaunched = async (r: TokenRecord): Promise<LaunchedToken> => {
   const kv = await getSite(r.ticker);
   const s = parseCompact(r.site);
+  const l = await getListing(r.ticker);
+  const venue = l?.ok && l.tokenId === r.token_id ? l.venue : "yeetpad";
   return {
+    venue,
+    venueUrl: venue === "yeetpad" ? null : (l?.url ?? null),
     ticker: r.ticker,
     tokenId: r.token_id,
     ownerId: r.owner_id,
@@ -412,5 +635,31 @@ app.get("/api/launches/:account", async (c) => {
   const from = Number(c.req.query("from") ?? 0) || 0;
   const limit = Math.min(50, Number(c.req.query("limit") ?? 20) || 20);
   const recs = await getTokensByOwner(account.data, from, limit);
-  return c.json({ account: account.data, launches: await Promise.all(recs.map(toLaunched)) });
+  const launches = await Promise.all(recs.map(toLaunched));
+  // Nearly tokens live outside our factory; they come from the KV index (first page only).
+  if (from === 0) {
+    const idx = JSON.parse((await kvStore().get(`nearly-by:${account.data}`)) ?? "[]") as { ticker: string; tokenId: string; at: number }[];
+    for (const n of idx) {
+      const kv = await getSite(n.ticker);
+      const l = await getListing(n.ticker);
+      launches.push({
+        ticker: n.ticker,
+        tokenId: n.tokenId,
+        ownerId: account.data,
+        createdAt: n.at,
+        name: kv?.branding.name ?? null,
+        tagline: kv?.branding.tagline ?? null,
+        colors: kv?.theme.colors ?? null,
+        slug: kv?.slug ?? null,
+        views: await getViews(n.ticker),
+        gaId: kv?.analytics?.gaId ?? null,
+        siteUrl: siteUrl(kv?.slug ?? n.ticker),
+        explorerUrl: `${config.explorerBase}/address/${n.tokenId}`,
+        venue: "nearly",
+        venueUrl: l?.url ?? nearlyUrl(n.tokenId),
+      });
+    }
+    launches.sort((a, b) => b.createdAt - a.createdAt);
+  }
+  return c.json({ account: account.data, launches });
 });

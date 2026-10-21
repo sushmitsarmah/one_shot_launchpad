@@ -48,6 +48,19 @@ export function buildConfig(src: EnvSource = {}) {
     /** Public base URL of the web app; token pages live at <siteBase>/t/<ticker>. */
     siteBase: env("SITE_BASE", "https://yeetpad.fun") as string,
 
+    // Launch venues. Rhea direct: the vault lists on Rhea DCL. Nearly: the creator's wallet calls `launch`.
+    dclContract: env("DCL_CONTRACT", "dclv2.ref-dev.testnet") as string,
+    wnearContract: env("WNEAR_CONTRACT", "wrap.testnet") as string,
+    /** Default opening FDV in NEAR for Rhea listings (sets the pool's init_point). */
+    rheaDefaultFdvNear: Number(env("RHEA_DEFAULT_FDV_NEAR", "1000")),
+    /** NEAR attached to create_pool (Rhea refunds what it doesn't use; ~0.0101 observed on testnet). */
+    rheaPoolDepositYocto: env("RHEA_POOL_DEPOSIT_YOCTO", (2n * 10n ** 22n).toString()) as string,
+    rheaPoolUrlBase: env("RHEA_POOL_URL_BASE", "https://testnet.rhea.finance/poolV2/") as string,
+    nearlyFactory: env("NEARLY_FACTORY", "dcl.nearpad-dev-4804.testnet") as string,
+    /** Nearly token page; empty = use the explorer. Mainnet: https://nearly.trade/token/ (unverified path). */
+    nearlyTokenUrlBase: env("NEARLY_TOKEN_URL_BASE", "") as string,
+    nearlyBatchChunk: Number(env("NEARLY_BATCH_CHUNK", "10")),
+
     // Auth: HMAC secret for session tokens (wrangler secret / .env). NEP-413 recipient defaults to the vault id.
     sessionSecret: env("SESSION_SECRET"),
     authRecipient: env("AUTH_RECIPIENT", env("VAULT_CONTRACT", "launch-vault.testnet")) as string,

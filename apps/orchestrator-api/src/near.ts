@@ -109,6 +109,8 @@ export interface TokenArgs {
   total_supply: string;
   /** Compact site JSON stored with the factory record. */
   site?: string | null;
+  /** Mint to the vault so it can list on Rhea, then hand everything to the creator. */
+  hold_for_listing?: boolean;
 }
 
 /** Factory registry record (see near-ft-factory TokenRecord). */
@@ -155,7 +157,7 @@ export async function getTokensByOwner(owner: string, fromIndex = 0, limit = 50)
 
 interface VaultEvent {
   event: string;
-  data: { ticker?: string; token_id?: string; account_id?: string };
+  data: { ticker?: string; token_id?: string; account_id?: string; pool_id?: string | null; lpt_id?: string | null; step?: string; position_to_creator?: boolean; tokens_to_creator?: string; cost?: string };
 }
 
 /** NEP-297 events emitted by the vault across all receipts of a transaction. */
@@ -245,4 +247,111 @@ export async function executeSponsoredLaunch(
   });
   const tokenId = decodeSuccessValue(r.status) as string | null;
   return { tokenId, txHash: r.transaction.hash };
+}
+
+// ---------- Rhea direct ----------
+
+/** NEAR the creator still needs on Rhea DCL to own a position: 0.5 the first time, a small top-up if low. */
+export async function creatorDclStorageNeeded(account: string): Promise<bigint> {
+  if (config.nearMock) return 5n * 10n ** 23n;
+  const b = (await getProvider().callFunction({
+    contractId: config.dclContract,
+    method: "storage_balance_of",
+    args: { account_id: account },
+  })) as { total: string; available: string } | null;
+  if (!b) {
+    const bounds = (await getProvider().callFunction({ contractId: config.dclContract, method: "storage_balance_bounds", args: {} })) as { min: string } | null;
+    return BigInt(bounds?.min ?? 5n * 10n ** 23n);
+  }
+  return BigInt(b.available) < 10n ** 22n ? 2n * 10n ** 22n : 0n;
+}
+
+export interface ListResult {
+  txHash: string;
+  ok: boolean;
+  poolId: string | null;
+  lptId: string | null;
+  positionToCreator: boolean;
+  tokensToCreator: string | null;
+  failedStep: string | null;
+}
+
+export async function listOnRhea(user: string, tokenId: string, params: Record<string, unknown>): Promise<ListResult> {
+  if (config.nearMock) {
+    const poolId = `${tokenId}|${config.wnearContract}|10000`;
+    return { txHash: mockHash(), ok: true, poolId, lptId: `${poolId}#1`, positionToCreator: true, tokensToCreator: "0", failedStep: null };
+  }
+  const r = await getRelayer().callFunctionRaw({
+    contractId: config.vaultContract,
+    methodName: "list_on_rhea",
+    args: { user_id: user, token_id: tokenId, params },
+    gas: 300n * TGAS,
+  });
+  const txHash = r.transaction.hash;
+  let events = vaultEvents(r);
+  const done = () => events.some((e) => e.event === "listed" || e.event === "released");
+  for (let i = 0; i < 8 && !done(); i++) {
+    await new Promise((res) => setTimeout(res, 1500));
+    const st = await getProvider().viewTransactionStatusWithReceipts({ txHash, accountId: config.relayerAccountId!, waitUntil: "FINAL" } as never);
+    events = vaultEvents(st);
+  }
+  const fin = events.find((e) => e.event === "listed" || e.event === "released");
+  const failed = events.find((e) => e.event === "list_failed");
+  return {
+    txHash,
+    ok: fin?.event === "listed" && Boolean(fin.data.position_to_creator),
+    poolId: fin?.data.pool_id ?? null,
+    lptId: fin?.data.lpt_id ?? null,
+    positionToCreator: Boolean(fin?.data.position_to_creator),
+    tokensToCreator: fin?.data.tokens_to_creator ?? null,
+    failedStep: failed?.data.step ?? (fin ? null : "unknown"),
+  };
+}
+
+// ---------- Nearly ----------
+
+export interface NearlyQuote {
+  token_storage: string;
+  pool_create: string;
+  dcl_storage: string;
+  dev_buy: string;
+  total: string;
+}
+
+export async function quoteNearly(iconBytes: number, textBytes: number): Promise<NearlyQuote> {
+  if (config.nearMock) return { token_storage: "0", pool_create: "0", dcl_storage: "0", dev_buy: "0", total: (2n * 10n ** 23n).toString() };
+  return (await getProvider().callFunction({
+    contractId: config.nearlyFactory,
+    method: "quote_launch",
+    args: { icon_bytes: iconBytes, dev_buy: "0", tax: 0, text_bytes: textBytes },
+  })) as unknown as NearlyQuote;
+}
+
+export interface NearlyLaunchEvent {
+  token: string;
+  creator: string;
+  symbol: string;
+  pool_id?: string;
+  lpt_id?: string;
+}
+
+/** `launch` events Nearly's factory emitted in a transaction (needs the signer for the RPC lookup). */
+export async function nearlyLaunchesInTx(txHash: string, signer: string): Promise<NearlyLaunchEvent[]> {
+  const st = (await getProvider().viewTransactionStatusWithReceipts({ txHash, accountId: signer, waitUntil: "FINAL" } as never)) as unknown as {
+    transaction: { signer_id: string; receiver_id: string };
+    receipts_outcome: { outcome: { executor_id: string; logs: string[] } }[];
+  };
+  if (st.transaction.signer_id !== signer) return [];
+  const out: NearlyLaunchEvent[] = [];
+  for (const r of st.receipts_outcome) {
+    if (r.outcome.executor_id !== config.nearlyFactory) continue;
+    for (const l of r.outcome.logs) {
+      if (!l.startsWith("EVENT_JSON:")) continue;
+      try {
+        const e = JSON.parse(l.slice(11));
+        if (e.standard === "nearpad" && e.event === "launch") out.push(...(e.data as NearlyLaunchEvent[]));
+      } catch {}
+    }
+  }
+  return out;
 }
