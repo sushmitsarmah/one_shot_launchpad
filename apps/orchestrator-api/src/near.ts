@@ -54,6 +54,18 @@ export async function getRequiredLaunchDeposit(): Promise<bigint> {
   return BigInt(v ?? "0");
 }
 
+/** True if `publicKey` is a FullAccess key of `accountId` (false if the key or account doesn't exist). */
+export async function isFullAccessKey(accountId: string, publicKey: string): Promise<boolean> {
+  try {
+    const k = await getProvider().viewAccessKey({ accountId, publicKey });
+    return k.permission === "FullAccess";
+  } catch (e) {
+    const msg = String((e as Error)?.message ?? e);
+    if (/does not exist|UNKNOWN_ACCESS_KEY|UNKNOWN_ACCOUNT|AccessKeyDoesNotExist|doesn't exist/i.test(msg)) return false;
+    throw e;
+  }
+}
+
 export async function accountExists(accountId: string): Promise<boolean> {
   if (config.nearMock) return false;
   try {

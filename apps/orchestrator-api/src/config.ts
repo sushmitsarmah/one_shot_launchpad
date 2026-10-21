@@ -39,6 +39,10 @@ export function buildConfig(src: EnvSource = {}) {
     tokenTotalSupply: env("TOKEN_TOTAL_SUPPLY", (10n ** 27n).toString()) as string,
     tokenDecimals: Number(env("TOKEN_DECIMALS", "18")),
     explorerBase: env("EXPLORER_BASE", "https://testnet.nearblocks.io") as string,
+
+    // Auth: HMAC secret for session tokens (wrangler secret / .env). NEP-413 recipient defaults to the vault id.
+    sessionSecret: env("SESSION_SECRET"),
+    authRecipient: env("AUTH_RECIPIENT", env("VAULT_CONTRACT", "launch-vault.testnet")) as string,
   };
 }
 

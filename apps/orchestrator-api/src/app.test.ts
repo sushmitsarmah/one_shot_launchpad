@@ -1,15 +1,38 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import { KeyPair } from "near-api-js";
 import { LaunchIdea, LaunchResponse } from "@osl/schema";
+import { signIn } from "./test-helpers";
 
 let app: typeof import("./app").app;
+const RECIPIENT = "launch-vault.mock.testnet";
 beforeAll(async () => {
   process.env.LLM_MOCK = "1";
   process.env.NEAR_MOCK = "1";
+  process.env.SESSION_SECRET = "test-secret";
+  process.env.VAULT_CONTRACT = RECIPIENT;
   ({ app } = await import("./app"));
 });
 
-const post = (path: string, body: unknown) =>
-  app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+const tokens = new Map<string, string>();
+async function session(account: string) {
+  if (!tokens.has(account)) {
+    const req = await signIn(KeyPair.fromRandom("ed25519"), account, RECIPIENT);
+    const r = await app.request("/api/auth/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
+    expect(r.status).toBe(200);
+    tokens.set(account, (await r.json()).token);
+  }
+  return tokens.get(account)!;
+}
+
+// Signs in as body.ownerWallet (if any) unless an explicit token/null is given.
+const post = async (path: string, body: any, token?: string | null) => {
+  const t = token === undefined ? (body?.ownerWallet && /^[a-z0-9._-]+$/.test(body.ownerWallet) ? await session(body.ownerWallet) : null) : token;
+  return app.request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(t ? { authorization: `Bearer ${t}` } : {}) },
+    body: JSON.stringify(body),
+  });
+};
 
 describe("api (mock mode)", () => {
   test("generate returns a valid idea", async () => {
@@ -20,7 +43,7 @@ describe("api (mock mode)", () => {
   });
 
   test("generate rejects bad input", async () => {
-    const r = await post("/api/generate", { prompt: "", ownerWallet: "NOT VALID" });
+    const r = await post("/api/generate", { prompt: "" }, await session("alice.testnet"));
     expect(r.status).toBe(400);
   });
 
@@ -30,6 +53,32 @@ describe("api (mock mode)", () => {
     expect(r.status).toBe(200);
     const j = LaunchResponse.parse(await r.json());
     expect(j.tokenId.startsWith(g.idea.ticker + ".")).toBe(true);
+  });
+
+  test("generate without a session is 401", async () => {
+    expect((await post("/api/generate", { prompt: "no auth here" }, null)).status).toBe(401);
+    expect((await post("/api/generate", { prompt: "bad auth here" }, "garbage.token")).status).toBe(401);
+    expect((await post("/api/launch", { idea: {} }, null)).status).toBe(401);
+  });
+
+  test("ownerWallet must match the session account", async () => {
+    const r = await post("/api/generate", { prompt: "impersonation", ownerWallet: "bob.testnet" }, await session("alice.testnet"));
+    expect(r.status).toBe(403);
+  });
+
+  test("account comes from the session when ownerWallet is omitted", async () => {
+    const r = await post("/api/generate", { prompt: "a token for cat lovers" }, await session("frank.testnet"));
+    expect(r.status).toBe(200);
+  });
+
+  test("auth/session rejects a bad signature", async () => {
+    const req = await signIn(KeyPair.fromRandom("ed25519"), "dave.testnet", RECIPIENT);
+    const r = await app.request("/api/auth/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...req, accountId: "erin.testnet" }),
+    });
+    expect(r.status).toBe(401);
   });
 
   test("balance", async () => {

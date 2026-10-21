@@ -58,7 +58,8 @@ export type SiteConfig = z.infer<typeof SiteConfig>;
 
 export const GenerateRequest = z.object({
   prompt: z.string().min(3).max(1000),
-  ownerWallet: NearAccountId,
+  /** Optional: the account comes from the session; if sent it must match it. */
+  ownerWallet: NearAccountId.optional(),
 });
 export type GenerateRequest = z.infer<typeof GenerateRequest>;
 
@@ -70,7 +71,8 @@ export const GenerateResponse = z.object({
 export type GenerateResponse = z.infer<typeof GenerateResponse>;
 
 export const LaunchRequest = z.object({
-  ownerWallet: NearAccountId,
+  /** Optional: the account comes from the session; if sent it must match it. */
+  ownerWallet: NearAccountId.optional(),
   idea: LaunchIdea,
 });
 export type LaunchRequest = z.infer<typeof LaunchRequest>;
@@ -107,4 +109,37 @@ export function parseNear(near: string): string {
   const [w, f = ""] = near.trim().split(".");
   if (!/^\d*$/.test(w ?? "") || !/^\d*$/.test(f) || f.length > 24) throw new Error("bad NEAR amount");
   return (BigInt(w || "0") * 10n ** 24n + BigInt((f + "0".repeat(24)).slice(0, 24))).toString();
+}
+
+// ---------- auth (NEP-413 sign-in -> session token) ----------
+
+/** Body of POST /api/auth/session: a NEP-413 signed message returned by the wallet. */
+export const SessionRequest = z.object({
+  accountId: NearAccountId,
+  publicKey: z.string().min(10).max(200), // "ed25519:<base58>"
+  signature: z.string().min(10).max(200), // base64 (or base58) of the 64-byte ed25519 signature
+  message: z.string().min(10).max(1000),
+  nonce: z.string().min(10).max(100), // base64 of 32 bytes
+  recipient: z.string().min(2).max(200),
+  callbackUrl: z.string().max(500).nullish(),
+});
+export type SessionRequest = z.infer<typeof SessionRequest>;
+
+export const SessionResponse = z.object({
+  token: z.string(),
+  accountId: NearAccountId,
+  expiresAt: z.number(), // unix ms
+});
+export type SessionResponse = z.infer<typeof SessionResponse>;
+
+/** Canonical sign-in message. The API parses `account` and `issued` back out of it. */
+export const SIGN_IN_TITLE = "Sign in to One Shot Launchpad";
+export function buildSignInMessage(accountId: string, issuedAt: Date = new Date()): string {
+  return `${SIGN_IN_TITLE}\naccount: ${accountId}\nissued: ${issuedAt.toISOString()}`;
+}
+export function parseSignInMessage(message: string): { accountId: string; issuedAt: number } | null {
+  const m = /^Sign in to One Shot Launchpad\naccount: (\S+)\nissued: (\S+)$/.exec(message);
+  if (!m) return null;
+  const issuedAt = Date.parse(m[2]);
+  return Number.isFinite(issuedAt) ? { accountId: m[1], issuedAt } : null;
 }
