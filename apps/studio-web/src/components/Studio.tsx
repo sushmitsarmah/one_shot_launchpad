@@ -112,8 +112,9 @@ export default function Studio() {
   }
 
   return (
-    <>
-      <section className="card">
+    <div className="dash">
+      <aside className="dash-side">
+      <section className="card s-wallet">
         <div className="row between">
           <div>
             <div className="muted small">1. Wallet connected</div>
@@ -138,7 +139,7 @@ export default function Studio() {
         </div>
       </section>
 
-      <section className="card">
+      <section className="card s-topup">
         <h2>2. Top up NEAR AI credits</h2>
         <p>
           Vault balance: <strong>{balance === null ? "…" : `${formatNear(balance)} NEAR`}</strong>{" "}
@@ -162,7 +163,39 @@ export default function Studio() {
         <p className="muted small">Calls <code>deposit_credits</code> on <code>{VAULT_CONTRACT}</code>. Unused credits can be withdrawn.</p>
       </section>
 
-      <section className="card">
+      <section className="card s-mine">
+        <div className="row between">
+          <h2>My launches</h2>
+          <button className="link" onClick={loadLaunches}>refresh</button>
+        </div>
+        {launches === null ? (
+          <p className="muted">Loading…</p>
+        ) : launches.length === 0 ? (
+          <p className="muted">Nothing yeeted yet. Your tokens will show up here.</p>
+        ) : (
+          <ul className="my-launches">
+            {launches.map((l) => (
+              <li key={l.ticker}>
+                <span className="dot" style={{ background: l.colors?.primary ?? "var(--pink)" }} />
+                <div className="ml-body">
+                  <a className="ml-name" href={`/t/${l.slug ?? l.ticker}`}>
+                    {l.name ?? l.ticker.toUpperCase()}
+                  </a>
+                  <span className="ml-meta small">
+                    <span className="ml-tk">${l.ticker.toUpperCase()}</span>
+                    <span className="muted when">{fmtWhen(l.createdAt)}</span>
+                    <a href={l.explorerUrl} target="_blank" rel="noreferrer">explorer ↗</a>
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      </aside>
+
+      <div className="dash-main">
+      <section className="card s-gen">
         <h2>3. Generate ideas</h2>
         {!session && (
           <p className="muted small">
@@ -170,7 +203,7 @@ export default function Studio() {
           </p>
         )}
         <textarea
-          rows={3}
+          rows={4}
           placeholder="e.g. a wholesome meme coin for sleepy penguins"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -203,6 +236,8 @@ export default function Studio() {
           </button>
         </div>
 
+        {ideas.length > 0 && (
+        <div className="idea-grid">
         {ideas.map((idea, i) => (
           <IdeaCard
             key={i}
@@ -212,10 +247,21 @@ export default function Studio() {
             onTicker={(ticker) => setIdeas(ideas.map((x, j) => (j === i ? { ...x, ticker } : x)))}
           />
         ))}
+        </div>
+        )}
+        {ideas.length === 0 && (
+          <div className="idea-empty">
+            <span aria-hidden="true">💡</span>
+            <p>
+              <strong>Your ideas land here.</strong> Describe a vibe, pick how many (up to {MAX_BATCH}), and hit Generate. Each idea costs a tiny
+              bit of vault credit; you can tweak tickers before launching.
+            </p>
+          </div>
+        )}
       </section>
 
       {ideas.length > 0 && (
-        <section className="card">
+        <section className="card s-launch">
           <h2>4. Yeet it</h2>
           <p className="muted small">
             Creates {chosen.length === 1 ? "a NEP-141 token" : `${chosen.length} NEP-141 tokens in one transaction`} owned by you, paid from your vault balance
@@ -259,38 +305,21 @@ export default function Studio() {
         </section>
       )}
 
-      <section className="card">
-        <div className="row between">
-          <h2>My launches</h2>
-          <button className="link" onClick={loadLaunches}>refresh</button>
-        </div>
-        {launches === null ? (
-          <p className="muted">Loading…</p>
-        ) : launches.length === 0 ? (
-          <p className="muted">Nothing yeeted yet. Your tokens will show up here.</p>
-        ) : (
-          <ul className="my-launches">
-            {launches.map((l) => (
-              <li key={l.ticker}>
-                <span className="dot" style={{ background: l.colors?.primary ?? "var(--pink)" }} />
-                <a href={`/t/${l.slug ?? l.ticker}`}>
-                  <strong>{l.name ?? l.ticker.toUpperCase()}</strong> <span className="muted">${l.ticker.toUpperCase()}</span>
-                </a>
-                <span className="muted small">{new Date(l.createdAt).toLocaleDateString()}</span>
-                <a className="small" href={l.explorerUrl} target="_blank" rel="noreferrer">explorer ↗</a>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
 
       {error && <p className="error">{error}</p>}
-    </>
+      </div>
+    </div>
   );
 }
 
-/** True if `fg` has enough contrast on `bg` (WCAG ratio >= 3, fine for large headings). */
-function readable(fg: string, bg: string) {
+function fmtWhen(ms: number) {
+  const d = new Date(ms);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }), hour: "numeric", minute: "2-digit" });
+}
+
+/** True if `fg` has at least `min` WCAG contrast on `bg` (3 = large headings, 4.5 = body text). */
+function readable(fg: string, bg: string, min = 3) {
   const lum = (hex: string) => {
     let h = hex.replace("#", "");
     if (h.length === 3) h = [...h].map((x) => x + x).join("");
@@ -302,7 +331,7 @@ function readable(fg: string, bg: string) {
   };
   const [a, b] = [lum(fg), lum(bg)];
   if (Number.isNaN(a) || Number.isNaN(b)) return true;
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) >= 3;
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) >= min;
 }
 
 function IdeaCard({
@@ -317,25 +346,32 @@ function IdeaCard({
   onPick: (v: boolean) => void;
 }) {
   const c = idea.colors;
+  const pillText = readable(c.background, c.accent, 4.5) ? c.background : readable("#1b1433", c.accent, 4.5) ? "#1b1433" : "#ffffff";
   return (
     <div className="idea" style={{ background: c.background, color: c.text, borderColor: c.primary, opacity: picked === false ? 0.55 : 1 }}>
-      <div className="row between">
-        {picked !== undefined && (
+      <div className="idea-top">
+        {picked !== undefined ? (
           <label className="pick small">
             <input type="checkbox" checked={picked} onChange={(e) => onPick(e.target.checked)} /> launch
           </label>
+        ) : (
+          <span />
         )}
-        <h3 style={{ color: readable(c.primary, c.background) ? c.primary : c.text }}>{idea.name}</h3>
-        <label className="ticker" style={{ background: c.accent, color: c.background }}>
+        <label className="ticker" style={{ background: c.accent, color: pillText }}>
           $
           <input
             value={idea.ticker}
+            style={{ width: `${Math.max(3, idea.ticker.length) + 1}ch` }}
+            maxLength={16}
             onChange={(e) => onTicker(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16))}
             aria-label="ticker"
           />
         </label>
       </div>
-      <p style={{ color: c.secondary }}><em>{idea.tagline}</em></p>
+      <h3 style={{ color: readable(c.primary, c.background) ? c.primary : c.text }}>{idea.name}</h3>
+      <p className="idea-tagline" style={{ color: readable(c.secondary, c.background, 4.5) ? c.secondary : c.text }}>
+        <em>{idea.tagline}</em>
+      </p>
       <p>{idea.description}</p>
       <div className="swatches">
         {Object.entries(c).map(([k, v]) => (
