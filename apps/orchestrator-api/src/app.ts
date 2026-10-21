@@ -30,7 +30,7 @@ import {
   type NearlyPrepareResponse,
   type QuoteResponse,
 } from "@osl/schema";
-import { buildListParams, computePoints, listingCost, rheaPoolUrl } from "./rhea";
+import { buildListParams, computePoints, listingCost, poolIdFor, rheaPoolUrl } from "./rhea";
 import { config } from "./config";
 import { generateIdeas } from "./llm";
 import { tokenIconDataUri } from "./icon";
@@ -63,6 +63,8 @@ import {
   type TokenArgs,
   type TokenRecord,
   creatorDclStorageNeeded,
+  getDclPoolPoint,
+  getHeld,
   listOnRhea,
   nearlyLaunchesInTx,
   quoteNearly,
@@ -249,6 +251,7 @@ async function listRhea(owner: string, tokenId: string, opts: RheaOptions | unde
       fdvNear: opts?.openingFdvNear ?? config.rheaDefaultFdvNear,
       creatorPct: opts?.creatorPct ?? 0,
       creatorDclStorage: await creatorDclStorageNeeded(owner),
+      existingPoint: await getDclPoolPoint(poolIdFor(tokenId)),
     });
     const { tokenIsX: _x, ...args } = params;
     const r = await listOnRhea(owner, tokenId, args);
@@ -288,6 +291,28 @@ function tokenArgs(idea: import("@osl/schema").LaunchIdea, icon: string, hold = 
     site: compactSite(idea),
   };
 }
+
+/**
+ * List an existing Yeetpad token on Rhea. The creator first sends the tokens to the vault with
+ * `ft_transfer_call(vault, amount, "list_on_rhea")` (the vault then holds them for this account).
+ */
+app.post("/api/list/rhea", requireSession, requireAllowed, async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { tokenId?: string; rhea?: RheaOptions } | null;
+  const tokenId = body?.tokenId ?? "";
+  if (!tokenId.endsWith(`.${config.factoryContract}`)) return c.json({ error: "not a Yeetpad token" }, 400);
+  const held = await getHeld(tokenId);
+  if (!held || held.creator !== c.var.account) return c.json({ error: "send the tokens to the vault with msg list_on_rhea first" }, 409);
+  if (held.listing) return c.json({ error: "listing already in progress" }, 409);
+  const exists = (await getDclPoolPoint(poolIdFor(tokenId))) !== null;
+  const cost = listingCost(await creatorDclStorageNeeded(c.var.account), exists);
+  const bal = await getVaultBalance(c.var.account);
+  if (bal < cost) return c.json({ error: `insufficient vault balance: listing needs ~${formatNear(cost)} NEAR, have ${formatNear(bal)}` }, 402);
+  const listing = await listRhea(c.var.account, tokenId, body?.rhea);
+  const ticker = tokenId.split(".")[0];
+  const found = await findSite(ticker);
+  if (found && listing.ok) await saveSite(found.ticker, withBuyUrl(found.site, listing));
+  return c.json({ listing }, listing.ok ? 200 : 502);
+});
 
 /** Launch 1-5 ideas in one vault call; each item is charged/refunded on its own. */
 app.post("/api/launch/batch", requireSession, requireAllowed, async (c) => {

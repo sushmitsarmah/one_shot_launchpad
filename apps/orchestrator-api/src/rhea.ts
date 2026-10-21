@@ -22,6 +22,16 @@ export const DCL_MIN_STORAGE = 5n * 10n ** 23n; // 0.5 NEAR storage_balance_boun
 const floorTo = (x: number, d: number) => Math.floor(x / d) * d;
 const clamp = (x: number) => Math.max(-MAX_POINT, Math.min(MAX_POINT, x));
 
+/** One-sided range for an existing pool at `current` (re-listing). */
+export function pointsForExisting(tokenIsX: boolean, current: number) {
+  if (tokenIsX) {
+    const left = Math.ceil((current + 1) / POINT_DELTA) * POINT_DELTA;
+    return { init: current, left, right: clamp(left + RANGE - POINT_DELTA) };
+  }
+  const right = Math.floor(current / POINT_DELTA) * POINT_DELTA;
+  return { init: current, left: clamp(right - RANGE), right };
+}
+
 export interface ListParams {
   pool_amount: string;
   init_point: number;
@@ -29,6 +39,7 @@ export interface ListParams {
   right_point: number;
   pool_deposit: string;
   creator_dcl_storage: string;
+  skip_create_pool?: boolean;
 }
 
 export function computePoints(tokenId: string, wnear: string, fdvNear: number, supply: bigint, decimals: number) {
@@ -58,8 +69,12 @@ export function buildListParams(opts: {
   fdvNear: number;
   creatorPct: number;
   creatorDclStorage: bigint;
+  /** Current point of an existing pool (re-listing); the FDV is then ignored. */
+  existingPoint?: number | null;
 }): ListParams & { tokenIsX: boolean } {
-  const pts = computePoints(opts.tokenId, config.wnearContract, opts.fdvNear, opts.supply, opts.decimals);
+  const fresh = computePoints(opts.tokenId, config.wnearContract, opts.fdvNear, opts.supply, opts.decimals);
+  const existing = opts.existingPoint ?? null;
+  const pts = existing === null ? fresh : { tokenIsX: fresh.tokenIsX, ...pointsForExisting(fresh.tokenIsX, existing) };
   const creatorBps = BigInt(Math.round(opts.creatorPct * 100));
   const pool = (opts.supply * (10_000n - creatorBps)) / 10_000n;
   return {
@@ -70,12 +85,16 @@ export function buildListParams(opts: {
     right_point: pts.right,
     pool_deposit: config.rheaPoolDepositYocto,
     creator_dcl_storage: opts.creatorDclStorage.toString(),
+    ...(existing !== null ? { skip_create_pool: true } : {}),
   };
 }
 
+export const poolIdFor = (tokenId: string) =>
+  tokenId < config.wnearContract ? `${tokenId}|${config.wnearContract}|10000` : `${config.wnearContract}|${tokenId}|10000`;
+
 /** NEAR a listing costs on top of the launch: pool + creator DCL storage (first time) + 2 registrations. */
-export function listingCost(creatorDclStorage: bigint): bigint {
-  return BigInt(config.rheaPoolDepositYocto) + creatorDclStorage + 2n * TOKEN_STORAGE;
+export function listingCost(creatorDclStorage: bigint, poolExists = false): bigint {
+  return (poolExists ? 0n : BigInt(config.rheaPoolDepositYocto)) + creatorDclStorage + 2n * TOKEN_STORAGE;
 }
 
 export const rheaPoolUrl = (poolId: string) => `${config.rheaPoolUrlBase}${poolId.replace(/\|/g, "@")}`;

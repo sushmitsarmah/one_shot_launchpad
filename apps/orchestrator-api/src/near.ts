@@ -266,6 +266,22 @@ export async function creatorDclStorageNeeded(account: string): Promise<bigint> 
   return BigInt(b.available) < 10n ** 22n ? 2n * 10n ** 22n : 0n;
 }
 
+/** Current point of a DCL pool, or null if it doesn't exist. */
+export async function getDclPoolPoint(poolId: string): Promise<number | null> {
+  if (config.nearMock) return null;
+  try {
+    const p = (await getProvider().callFunction({ contractId: config.dclContract, method: "get_pool", args: { pool_id: poolId } })) as { current_point: number } | null;
+    return p ? p.current_point : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getHeld(tokenId: string): Promise<{ creator: string; listing: boolean; lpt_id: string | null } | null> {
+  if (config.nearMock) return null;
+  return (await getProvider().callFunction({ contractId: config.vaultContract, method: "get_held", args: { token_id: tokenId } })) as never;
+}
+
 export interface ListResult {
   txHash: string;
   ok: boolean;

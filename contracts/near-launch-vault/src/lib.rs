@@ -899,7 +899,9 @@ pub fn prep_refunds(p: &ListParams) -> Vec<u128> {
 /// One-sided range checks. Token as X: the whole range sits above the price (only X in it).
 /// Token as Y: the range sits at or below the price (only Y in it). All points on the fee tier grid.
 pub fn check_points(token_is_x: bool, init: i32, left: i32, right: i32) {
-    for p in [init, left, right] {
+    // An existing pool's current point can be anywhere; the range ends must sit on the grid.
+    require!((-DCL_MAX_POINT..=DCL_MAX_POINT).contains(&init), "point out of range");
+    for p in [left, right] {
         require!(p % DCL_POINT_DELTA == 0, "points must be multiples of 200");
         require!((-DCL_MAX_POINT..=DCL_MAX_POINT).contains(&p), "point out of range");
     }
