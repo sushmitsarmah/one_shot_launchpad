@@ -1,0 +1,14 @@
+[package]
+name = "near-ft-token"
+description = "Standard NEP-141 token deployed by near-ft-factory"
+edition.workspace = true
+version.workspace = true
+repository = "https://github.com/monolithlabs/one_shot_launchpad"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+near-contract-standards = { workspace = true }
+

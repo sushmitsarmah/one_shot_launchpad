@@ -1,0 +1,16 @@
+[package]
+name = "near-ft-factory"
+description = "Factory that deploys NEP-141 tokens as <ticker>.<factory> sub-accounts"
+edition.workspace = true
+version.workspace = true
+repository = "https://github.com/monolithlabs/one_shot_launchpad"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+near-contract-standards = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }

@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+  "contracts/near-ft-token",
+  "contracts/near-ft-factory",
+  "contracts/near-launch-vault",
+]
+# integration-tests is its own workspace (near-workspaces deps conflict with
+# near-sdk unit-testing deps), see contracts/integration-tests/Cargo.toml
+exclude = ["contracts/integration-tests"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+[workspace.dependencies]
+near-sdk = "5.29"
+near-contract-standards = "5.29"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
