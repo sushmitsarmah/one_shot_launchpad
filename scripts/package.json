@@ -1,0 +1,12 @@
+{
+  "name": "@osl/scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy:factory": "bun deploy-factory.ts",
+    "deploy:vault": "bun deploy-vault.ts",
+    "deploy:all": "bun deploy-factory.ts && bun deploy-vault.ts"
+  },
+  "dependencies": { "near-api-js": "^7.3.1" },
+  "devDependencies": { "@types/bun": "^1.4.3" }
+}

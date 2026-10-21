@@ -2,15 +2,20 @@
   "name": "one_shot_launchpad",
   "private": true,
   "type": "module",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "scripts"
+  ],
   "scripts": {
     "dev:api": "bun --cwd apps/orchestrator-api run dev",
     "dev:web": "bun --cwd apps/studio-web run dev",
     "build:web": "bun --cwd apps/studio-web run build",
     "contracts:build": "bash contracts/build-contracts.sh",
     "contracts:test": "cargo test --workspace && cd contracts/integration-tests && cargo test",
-    "deploy:factory": "bun scripts/deploy-factory.ts",
-    "deploy:vault": "bun scripts/deploy-vault.ts",
-    "typecheck": "bun --cwd packages/schema x tsc --noEmit && bun --cwd apps/orchestrator-api x tsc --noEmit"
+    "deploy:factory": "bun --cwd scripts run deploy:factory",
+    "deploy:vault": "bun --cwd scripts run deploy:vault",
+    "typecheck": "bun --cwd packages/schema x tsc --noEmit && bun --cwd apps/orchestrator-api x tsc --noEmit",
+    "deploy:all": "bun --cwd scripts run deploy:all"
   }
 }
