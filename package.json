@@ -8,16 +8,16 @@
     "scripts"
   ],
   "scripts": {
-    "dev:api": "bun --cwd apps/orchestrator-api run dev",
-    "dev:web": "bun --cwd apps/studio-web run dev",
-    "build:web": "bun --cwd apps/studio-web run build",
+    "dev:api": "cd apps/orchestrator-api && bun run dev",
+    "dev:web": "cd apps/studio-web && bun run dev",
+    "build:web": "cd apps/studio-web && bun run build",
     "contracts:build": "bash contracts/build-contracts.sh",
     "contracts:test": "cargo test --workspace && cd contracts/integration-tests && cargo test",
-    "deploy:factory": "bun --cwd scripts run deploy:factory",
-    "deploy:vault": "bun --cwd scripts run deploy:vault",
+    "deploy:factory": "cd scripts && bun run deploy:factory",
+    "deploy:vault": "cd scripts && bun run deploy:vault",
     "typecheck": "cd apps/orchestrator-api && bun x tsc --noEmit && cd ../studio-web && bun x tsc --noEmit && cd ../../scripts && ../apps/orchestrator-api/node_modules/.bin/tsc --noEmit",
-    "deploy:all": "bun --cwd scripts run deploy:all",
-    "test:api": "bun --cwd apps/orchestrator-api test",
+    "deploy:all": "cd scripts && bun run deploy:all",
+    "test:api": "cd apps/orchestrator-api && bun test",
     "test": "bun run test:api && bun run contracts:test"
   }
 }
