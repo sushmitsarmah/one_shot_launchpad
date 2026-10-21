@@ -1,0 +1,110 @@
+import { z } from "zod";
+
+const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "hex colour like #12abef");
+
+/** NEAR account id (testnet named or implicit). */
+export const NearAccountId = z
+  .string()
+  .min(2)
+  .max(64)
+  .regex(/^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/, "invalid NEAR account id");
+
+/** Ticker used as the token sub-account: `<ticker>.<factory>`. Mirrors the factory's validation. */
+export const Ticker = z
+  .string()
+  .regex(/^[a-z][a-z0-9]{1,15}$/, "ticker: 2-16 chars, lowercase a-z/0-9, starts with a letter");
+
+export const LaunchIdea = z.object({
+  name: z.string().min(2).max(40),
+  ticker: Ticker,
+  tagline: z.string().min(3).max(120),
+  description: z.string().min(10).max(600),
+  colors: z.object({
+    primary: hex,
+    secondary: hex,
+    accent: hex,
+    background: hex,
+    text: hex,
+  }),
+});
+export type LaunchIdea = z.infer<typeof LaunchIdea>;
+
+export const Blueprint = z.enum(["meme-landing", "utility-landing", "community-hub"]);
+
+export const SiteConfig = z.object({
+  siteId: z.string().min(3),
+  ownerWallet: NearAccountId,
+  ecosystem: z.literal("near"),
+  blueprint: Blueprint,
+  theme: z.object({
+    colors: LaunchIdea.shape.colors,
+    fonts: z.object({ heading: z.string(), body: z.string() }),
+  }),
+  branding: z.object({
+    name: z.string(),
+    ticker: z.string(),
+    tagline: z.string(),
+    description: z.string(),
+    logoUrl: z.string().url().optional(),
+  }),
+  tokenLaunch: z.object({
+    contractOrMintAddress: z.string(),
+    buyUrl: z.string().url(),
+  }),
+});
+export type SiteConfig = z.infer<typeof SiteConfig>;
+
+// ---------- API contracts ----------
+
+export const GenerateRequest = z.object({
+  prompt: z.string().min(3).max(1000),
+  ownerWallet: NearAccountId,
+});
+export type GenerateRequest = z.infer<typeof GenerateRequest>;
+
+export const GenerateResponse = z.object({
+  idea: LaunchIdea,
+  charged: z.string(), // yoctoNEAR
+  txHash: z.string().nullable(),
+});
+export type GenerateResponse = z.infer<typeof GenerateResponse>;
+
+export const LaunchRequest = z.object({
+  ownerWallet: NearAccountId,
+  idea: LaunchIdea,
+});
+export type LaunchRequest = z.infer<typeof LaunchRequest>;
+
+export const LaunchResponse = z.object({
+  tokenId: z.string(),
+  txHash: z.string(),
+  explorerUrl: z.string().url(),
+  siteConfig: SiteConfig,
+});
+export type LaunchResponse = z.infer<typeof LaunchResponse>;
+
+export const BalanceResponse = z.object({
+  account: z.string(),
+  balance: z.string(), // yoctoNEAR
+  balanceNear: z.string(),
+});
+export type BalanceResponse = z.infer<typeof BalanceResponse>;
+
+/** JSON Schema for LLM structured output (OpenAI `response_format: json_schema`). */
+export const launchIdeaJsonSchema = z.toJSONSchema(LaunchIdea, { target: "draft-7" });
+
+/** yoctoNEAR (string/bigint) -> human NEAR string, 4 decimals. */
+export function formatNear(yocto: string | bigint, decimals = 4): string {
+  const v = BigInt(yocto);
+  const base = 10n ** 24n;
+  const whole = v / base;
+  const frac = (v % base).toString().padStart(24, "0").slice(0, decimals);
+  return `${whole}.${frac}`;
+}
+
+/** Human NEAR ("1.5") -> yoctoNEAR string. */
+export function parseNear(near: string): string {
+  const [w, f = ""] = near.trim().split(".");
+  if (!/^\d*$/.test(w ?? "") || !/^\d*$/.test(f) || f.length > 24) throw new Error("bad NEAR amount");
+  return (BigInt(w || "0") * 10n ** 24n + BigInt((f + "0".repeat(24)).slice(0, 24))).toString();
+}
