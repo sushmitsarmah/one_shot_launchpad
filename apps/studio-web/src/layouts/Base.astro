@@ -22,6 +22,14 @@ const url = new URL(Astro.url.pathname, SITE).toString();
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!-- Google tag (gtag.js) -->
+    <script is:inline async src="https://www.googletagmanager.com/gtag/js?id=G-J9X66TQZKV"></script>
+    <script is:inline>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-J9X66TQZKV');
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" id="favicon" href="/favicon.svg" type="image/svg+xml" />
     <title>{title}</title>
