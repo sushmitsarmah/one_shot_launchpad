@@ -8,6 +8,10 @@ import type {
   LaunchIdea,
   LaunchResponse,
   MeResponse,
+  NearlyFinalizeResponse,
+  NearlyPrepareResponse,
+  QuoteResponse,
+  RheaOptions,
   SiteConfig,
 } from "@osl/schema";
 import { API_URL } from "./config";
@@ -43,8 +47,18 @@ async function post<T>(path: string, body: unknown, token: string): Promise<T> {
 export const generate = (prompt: string, ownerWallet: string, token: string, count = 1) =>
   post<GenerateResponse>("/api/generate", { prompt, ownerWallet, count }, token);
 
-export const launchBatch = (ownerWallet: string, ideas: LaunchIdea[], token: string) =>
-  post<BatchLaunchResponse>("/api/launch/batch", { ownerWallet, ideas }, token);
+export type ListOnChoice = "none" | "rhea" | "nearly";
+
+export const launchBatch = (ownerWallet: string, ideas: LaunchIdea[], token: string, listOn: "none" | "rhea" = "none", rhea?: RheaOptions) =>
+  post<BatchLaunchResponse>("/api/launch/batch", { ownerWallet, ideas, listOn, ...(listOn === "rhea" ? { rhea } : {}) }, token);
+
+export const quote = (ideas: LaunchIdea[], listOn: ListOnChoice, token: string, rhea?: RheaOptions) =>
+  post<QuoteResponse>("/api/quote", { ideas, listOn, ...(listOn === "rhea" ? { rhea } : {}) }, token);
+
+export const nearlyPrepare = (ideas: LaunchIdea[], token: string) => post<NearlyPrepareResponse>("/api/nearly/prepare", { ideas }, token);
+
+export const nearlyFinalize = (items: { ticker: string; txHash: string }[], token: string) =>
+  post<NearlyFinalizeResponse>("/api/nearly/finalize", { items }, token);
 
 export async function saveSiteSettings(id: string, gaId: string | null, token: string) {
   const r = await fetch(`${API_URL}/api/site/${encodeURIComponent(id)}/settings`, {

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type LaunchedToken, type LaunchIdea, type SessionResponse } from "@osl/schema";
+import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type LaunchedToken, type LaunchIdea, type QuoteResponse, type SessionResponse } from "@osl/schema";
 import "@near-wallet-selector/modal-ui/styles.css";
-import { initWallet, depositCredits, signOut } from "../lib/wallet";
+import { initWallet, depositCredits, signCallsInChunks, signOut, takeRedirectedNearly } from "../lib/wallet";
 import { getVaultBalance } from "../lib/near";
-import { appLocked, generate, launchBatch, me, myLaunches, saveSiteSettings, UnauthorizedError } from "../lib/api";
+import { appLocked, generate, launchBatch, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, type ListOnChoice } from "../lib/api";
+import { EXPLORER_BASE } from "../lib/config";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { WaitlistForm } from "./WaitlistForm";
 import Admin from "./Admin";
@@ -30,6 +31,12 @@ export default function Studio() {
   const [notWhitelisted, setNotWhitelisted] = useState(false);
   const [showConnect, setShowConnect] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [listOn, setListOn] = useState<ListOnChoice>("none");
+  const [fdv, setFdv] = useState("1000");
+  const [creatorPct, setCreatorPct] = useState("0");
+  const [q, setQ] = useState<QuoteResponse | null>(null);
+  const [qErr, setQErr] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [tab, setTab] = useState<"studio" | "admin">(() => (typeof location !== "undefined" && location.hash === "#admin" ? "admin" : "studio"));
   const openTab = (t: "studio" | "admin") => {
     setTab(t);
@@ -114,6 +121,46 @@ export default function Studio() {
   useEffect(() => void loadLaunches(), [loadLaunches]);
 
   const chosen = ideas.filter((_, i) => picked[i]);
+  const rheaOpts = { openingFdvNear: Number(fdv) || 1000, creatorPct: Math.min(90, Math.max(0, Number(creatorPct) || 0)) };
+
+  // Cost estimate from the venue's quote views (only with a live session; never prompts the wallet).
+  const chosenKey = chosen.map((i) => i.ticker).join(",");
+  useEffect(() => {
+    if (!session?.token || chosen.length === 0) return setQ(null);
+    let stop = false;
+    const t = setTimeout(() => {
+      quote(chosen, listOn, session.token, rheaOpts)
+        .then((r) => !stop && (setQ(r), setQErr(null)))
+        .catch((e) => !stop && (setQ(null), setQErr((e as Error).message)));
+    }, 300);
+    return () => {
+      stop = true;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.token, chosenKey, listOn, fdv, creatorPct]);
+
+  // Redirect wallets come back with ?transactionHashes=; finish those Nearly launches.
+  useEffect(() => {
+    if (!session?.token) return;
+    const done = takeRedirectedNearly();
+    if (!done.length) return;
+    nearlyFinalize(done, session.token)
+      .then((r) => setResult({ txHash: done[0].txHash, explorerUrl: `${EXPLORER_BASE}/txns/${done[0].txHash}`, results: r.results }))
+      .then(() => loadLaunches())
+      .catch((e) => setError((e as Error).message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.token]);
+
+  const launchNearly = async (token: string) => {
+    const prep = await nearlyPrepare(chosen, token);
+    setProgress(`Sign ${prep.txs.length} Nearly launch${prep.txs.length > 1 ? "es" : ""} in your wallet…`);
+    const signed = await signCallsInChunks(prep.txs, prep.chunk, (n) => setProgress(`Signed ${n}/${prep.txs.length}…`));
+    if (!signed.length) throw new Error("the wallet returned no transactions");
+    setProgress("Recording your tokens…");
+    const r = await nearlyFinalize(signed, token);
+    setResult({ txHash: signed[0].txHash, explorerUrl: `${EXPLORER_BASE}/txns/${signed[0].txHash}`, results: r.results });
+  };
 
   const run = async (kind: Busy, fn: () => Promise<void>) => {
     setBusy(kind);
@@ -298,7 +345,7 @@ export default function Studio() {
         ) : (
           <ul className="my-launches">
             {launches.map((l) => (
-              <li key={l.ticker}>
+              <li key={l.tokenId}>
                 <span className="dot" style={{ background: l.colors?.primary ?? "var(--pink)" }} />
                 <div className="ml-body">
                   <a className="ml-name" href={`/t/${l.slug ?? l.ticker}`}>
@@ -309,6 +356,11 @@ export default function Studio() {
                     <span className="muted when">{fmtWhen(l.createdAt)}</span>
                     <span className="ml-views" title="Page views (approximate, no cookies)">👀 {l.views ?? 0}</span>
                     <a href={l.explorerUrl} target="_blank" rel="noreferrer">explorer ↗</a>
+                    {l.venue && l.venue !== "yeetpad" && l.venueUrl && (
+                      <a href={l.venueUrl} target="_blank" rel="noreferrer">
+                        {l.venue === "rhea" ? "Rhea ↗" : "Nearly ↗"}
+                      </a>
+                    )}
                     {l.ownerId === account && (
                       <button className="link" onClick={() => setOpenSettings(openSettings === l.ticker ? null : l.ticker)}>
                         settings
@@ -407,24 +459,94 @@ export default function Studio() {
       {ideas.length > 0 && (
         <section className="card s-launch">
           <h2>4. Yeet it</h2>
+          <div className="venue-pick" role="radiogroup" aria-label="List on">
+            <span className="muted small">List on</span>
+            {(
+              [
+                ["none", "None", "Token only"],
+                ["rhea", "Rhea (direct)", "Our token + Rhea DCL pool"],
+                ["nearly", "Nearly", "Nearly's token + pool"],
+              ] as const
+            ).map(([v, label, hint]) => (
+              <button key={v} role="radio" aria-checked={listOn === v} className={listOn === v ? "on" : ""} onClick={() => setListOn(v)} title={hint}>
+                {label}
+              </button>
+            ))}
+          </div>
           <p className="muted small">
-            Creates {chosen.length === 1 ? "a NEP-141 token" : `${chosen.length} NEP-141 tokens in one transaction`} owned by you, paid from your vault balance
-            (~1.82 NEAR each; a failed item is refunded). Each gets a site at <code>/t/&lt;token-name&gt;</code>.
+            {listOn === "none" && (
+              <>Creates {chosen.length === 1 ? "a NEP-141 token" : `${chosen.length} NEP-141 tokens in one transaction`} owned by you, paid from your vault credit (a failed item is refunded).</>
+            )}
+            {listOn === "rhea" && (
+              <>
+                Creates your token{chosen.length > 1 ? "s" : ""}, then the vault opens a Rhea DCL pool <code>token|wNEAR</code> (1% fee tier) and adds the supply
+                one-sided. You get the LP position (NFT) and any tokens not in the pool, straight to your wallet. Paid from vault credit, one click.
+              </>
+            )}
+            {listOn === "nearly" && (
+              <>
+                Nearly's factory creates and lists the token; your wallet signs and pays each launch ({chosen.length > 1 ? "batched in one wallet prompt" : "one prompt"}).
+                Nearly locks the LP in its own locker and takes its trading fees.
+              </>
+            )}{" "}
+            Each gets a site at <code>/t/&lt;token-name&gt;</code>.
           </p>
+          {listOn === "rhea" && (
+            <div className="venue-opts row">
+              <label>
+                Opening valuation (FDV, NEAR) <input type="number" min="1" value={fdv} onChange={(e) => setFdv(e.target.value)} />
+              </label>
+              <label>
+                Keep for you (% of supply) <input type="number" min="0" max="90" value={creatorPct} onChange={(e) => setCreatorPct(e.target.value)} />
+              </label>
+              {q?.rhea && <span className="muted small">opening point {q.rhea.initPoint} · price ≈ {(rheaOpts.openingFdvNear / 1e9).toPrecision(3)} NEAR/token</span>}
+            </div>
+          )}
+          {q && q.listOn === listOn && (
+            <table className="cost-table small">
+              <tbody>
+                {q.items.map((it) => (
+                  <tr key={it.ticker}>
+                    <td>${it.ticker.toUpperCase()}</td>
+                    <td className="muted">{Object.entries(it.parts).map(([k, v]) => `${k.replace(/_/g, " ")} ${formatNear(BigInt(v))}`).join(" · ")}</td>
+                    <td className="num">~{formatNear(BigInt(it.total))} NEAR</td>
+                  </tr>
+                ))}
+                <tr className="total">
+                  <td>Total</td>
+                  <td className="muted">{q.items[0]?.paidFrom === "wallet" ? "from your wallet" : "from vault credit"}</td>
+                  <td className="num">~{formatNear(BigInt(q.total))} NEAR</td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+          {q?.notes?.map((n) => (
+            <p key={n} className="muted small">{n}</p>
+          ))}
+          {!q && session && qErr && <p className="muted small">Cost estimate unavailable: {qErr}</p>}
           <button
             disabled={busy !== null || chosen.length === 0}
             onClick={() =>
               run("launch", async () => {
                 const token = await authToken(account);
                 if (!token) return;
-                setResult(await launchBatch(account, chosen, token));
+                setProgress(listOn === "rhea" ? "Launching and listing on Rhea (about 10 s per token)…" : null);
+                try {
+                  if (listOn === "nearly") await launchNearly(token);
+                  else setResult(await launchBatch(account, chosen, token, listOn, rheaOpts));
+                } finally {
+                  setProgress(null);
+                }
                 await refresh();
                 await loadLaunches();
               })
             }
           >
-            {busy === "launch" ? "Launching…" : chosen.length > 1 ? `Launch ${chosen.length} tokens` : "Launch token"}
+            {busy === "launch"
+              ? "Launching…"
+              : `${chosen.length > 1 ? `Launch ${chosen.length} tokens` : "Launch token"}${listOn === "rhea" ? " + list on Rhea" : listOn === "nearly" ? " on Nearly" : ""}`}
           </button>
+          {progress && <p className="muted small">{progress}</p>}
           {result && (
             <div className="result">
               <ul className="launch-results">
@@ -434,6 +556,19 @@ export default function Studio() {
                     {r.ok ? (
                       <>
                         <code>{r.tokenId}</code> · <a href={`/t/${r.slug ?? r.ticker}`}>open site →</a>
+                        {r.listing && (
+                          <>
+                            {" "}
+                            ·{" "}
+                            {r.listing.ok && r.listing.url ? (
+                              <a href={r.listing.url} target="_blank" rel="noreferrer">
+                                {r.listing.venue === "rhea" ? "Rhea pool ↗" : "Nearly ↗"}
+                              </a>
+                            ) : (
+                              <span className="muted">{r.listing.error}</span>
+                            )}
+                          </>
+                        )}
                       </>
                     ) : (
                       <span className="muted">{r.error}</span>

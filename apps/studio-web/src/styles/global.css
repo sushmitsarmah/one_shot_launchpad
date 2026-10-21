@@ -149,3 +149,15 @@ details summary { cursor: pointer; font-weight: 700; }
 .admin-allowed { list-style: none; padding: 0; margin: 0.8rem 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .admin-allowed li { display: inline-flex; align-items: center; gap: 0.45rem; border: 2px solid var(--ink); border-radius: 12px; padding: 0.35rem 0.6rem; background: var(--cream); }
 .app-main .admin-card input { padding: 0.5rem 0.75rem; }
+
+/* Launch venue picker + cost table (full width of the launch card) */
+.venue-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0.2rem 0 0.6rem; width: 100%; }
+.app-main .venue-pick button { padding: 0.45rem 0.9rem; font-size: 0.95rem; background: var(--white); box-shadow: 2px 2px 0 var(--ink); }
+.app-main .venue-pick button.on { background: var(--pink); color: var(--white); }
+.venue-opts { flex-wrap: wrap; gap: 0.8rem 1.2rem; align-items: flex-end; margin-bottom: 0.6rem; width: 100%; }
+.venue-opts label { display: grid; gap: 0.25rem; font-size: 0.85rem; }
+.venue-opts input { width: 11rem; }
+.cost-table { width: 100%; border-collapse: collapse; margin: 0.2rem 0 0.6rem; }
+.cost-table td { padding: 0.3rem 0.4rem; border-bottom: 1px dashed rgba(0, 0, 0, 0.15); vertical-align: top; }
+.cost-table td.num { text-align: right; white-space: nowrap; font-weight: 700; }
+.cost-table tr.total td { border-bottom: 0; font-weight: 800; }

@@ -30,6 +30,55 @@ export async function depositCredits(yocto: string) {
   });
 }
 
+export interface PreparedCall {
+  ticker: string;
+  receiverId: string;
+  methodName: string;
+  args: Record<string, unknown>;
+  gas: string;
+  deposit: string;
+}
+
+export const NEARLY_PENDING = "yeetpad.nearlyPending";
+
+/**
+ * Signs one transaction per call with signAndSendTransactions, `chunk` per wallet prompt.
+ * Redirect wallets (MyNearWallet) leave the page: the tickers are kept in localStorage and the
+ * hashes come back in `?transactionHashes=` (see takeRedirectedNearly).
+ */
+export async function signCallsInChunks(calls: PreparedCall[], chunk: number, onChunk?: (done: number) => void) {
+  const { selector } = await initWallet();
+  const wallet = await selector.wallet();
+  const out: { ticker: string; txHash: string }[] = [];
+  for (let i = 0; i < calls.length; i += chunk) {
+    const part = calls.slice(i, i + chunk);
+    localStorage.setItem(NEARLY_PENDING, JSON.stringify(part.map((c) => c.ticker)));
+    const res = await wallet.signAndSendTransactions({
+      transactions: part.map((c) => ({
+        receiverId: c.receiverId,
+        actions: [actionCreators.functionCall(c.methodName, c.args, BigInt(c.gas), BigInt(c.deposit))],
+      })),
+    });
+    const outcomes = (res ?? []) as { transaction?: { hash?: string } }[];
+    outcomes.forEach((o, k) => o?.transaction?.hash && out.push({ ticker: part[k].ticker, txHash: o.transaction.hash }));
+    localStorage.removeItem(NEARLY_PENDING);
+    onChunk?.(Math.min(i + chunk, calls.length));
+  }
+  return out;
+}
+
+/** After a redirect wallet returns: pairs pending tickers with `transactionHashes` (same order). */
+export function takeRedirectedNearly(): { ticker: string; txHash: string }[] {
+  const pending = JSON.parse(localStorage.getItem(NEARLY_PENDING) ?? "[]") as string[];
+  const u = new URL(location.href);
+  const hashes = (u.searchParams.get("transactionHashes") ?? "").split(",").filter(Boolean);
+  if (!pending.length || !hashes.length) return [];
+  localStorage.removeItem(NEARLY_PENDING);
+  u.searchParams.delete("transactionHashes");
+  history.replaceState(null, "", u.toString());
+  return pending.slice(0, hashes.length).map((ticker, i) => ({ ticker, txHash: hashes[i] }));
+}
+
 export async function signOut() {
   const { clearSession } = await import("./auth");
   clearSession();
