@@ -196,7 +196,7 @@ Admin API (session bearer token + admin, otherwise 401 / 403 `{ "code": "not_adm
 
 | endpoint | |
 |---|---|
-| `GET /api/admin/waitlist` | `{ entries: [{account, contact, joinedAt, status: pending\|approved\|revoked, approvedAt, approvedBy}], counts, truncated }`; follows KV list cursors (up to 20k) |
+| `GET /api/admin/waitlist` | `{ entries: [{account, contact, joinedAt, status: pending\|approved\|revoked, approvedAt, approvedBy}], counts, allowed, truncated }`; follows KV list cursors (up to 20k). KV `list()` can lag writes by ~60 s, so it is only used to find keys; values and `allow:` state are re-read with bulk `get` (fresh): approvals/removals show immediately, brand-new signups within about a minute |
 | `GET /api/admin/allowed` | `{ allowed: [{account, source: admin\|env\|kv, approvedAt, approvedBy}], truncated }` |
 | `POST /api/admin/approve` | `{ accounts: [...] }` (1–100) → `{ results: [{account, ok, note?}] }` |
 | `POST /api/admin/revoke` | same body; deletes `allow:` keys, keeps the requests |
@@ -206,7 +206,7 @@ CLI alternative (writes KV directly, no redeploy): `bun run allow you.testnet`, 
 
 ### Waitlist signups
 
-`POST /api/whitelist` `{ "account": "<near id>", "contact"?: "<email or @handle, ≤100 chars>" }` (body ≤ 1 KiB) stores `waitlist:<account>` → `{account, contact, createdAt, updatedAt, status}` in the `SITES` KV namespace (`yeetpad-sites`), also as KV metadata so the admin list needs no per-key reads. It is idempotent (`already: true` on repeats; the first `createdAt` is kept, a new contact updates the entry) and soft rate-limited to 10 signups per IP per hour (IPv6 counted per /64; `wlrl:<ip>:<window>` keys with a TTL). There is no public listing; admins use the Admin tab, or wrangler (from `apps/orchestrator-api`):
+`POST /api/whitelist` `{ "account": "<near id>", "contact"?: "<email or @handle, ≤100 chars>" }` (body ≤ 1 KiB) stores `waitlist:<account>` → `{account, contact, createdAt, updatedAt, status}` in the `SITES` KV namespace (`yeetpad-sites`), also as KV metadata. It is idempotent (`already: true` on repeats; the first `createdAt` is kept, a new contact updates the entry) and soft rate-limited to 10 signups per IP per hour (IPv6 counted per /64; `wlrl:<ip>:<window>` keys with a TTL). There is no public listing; admins use the Admin tab, or wrangler (from `apps/orchestrator-api`):
 
 ```bash
 npx wrangler kv key list --binding SITES --remote --prefix waitlist:

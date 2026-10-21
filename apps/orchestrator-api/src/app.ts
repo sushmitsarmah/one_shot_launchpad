@@ -295,10 +295,10 @@ app.use("/api/admin/*", requireSession, requireAdmin);
 
 /** Waitlist requests with effective status (approved = on the allowlist now). Follows KV list cursors. */
 app.get("/api/admin/waitlist", async (c) => {
-  const { entries, truncated } = await listWaitlist(kvStore(), config);
+  const { entries, allowed, truncated } = await listWaitlist(kvStore(), config);
   const counts = { total: entries.length, pending: 0, approved: 0, revoked: 0 };
   for (const e of entries) counts[e.status]++;
-  return c.json({ entries, counts, truncated });
+  return c.json({ entries, counts, allowed, truncated });
 });
 
 /** Everyone who can get in: admins, ALLOWED_ACCOUNTS and KV approvals. */

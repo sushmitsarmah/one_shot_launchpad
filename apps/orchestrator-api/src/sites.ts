@@ -18,6 +18,28 @@ export interface KVLike {
   list?(opts: { prefix?: string; cursor?: string; limit?: number }): Promise<KVListResult>;
 }
 
+/**
+ * Reads many keys. Uses Workers KV bulk get (≤100 keys per call, one KV operation each) when the
+ * binding supports it, else one get per key. Unlike list(), these reads see recent writes.
+ */
+export async function getMany(kv: KVLike, keys: string[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  for (let i = 0; i < keys.length; i += 100) {
+    const chunk = keys.slice(i, i + 100);
+    let bulk: unknown = null;
+    if (!(kv instanceof MemoryKV)) {
+      try {
+        bulk = await (kv.get as unknown as (k: string[]) => Promise<unknown>)(chunk);
+      } catch {
+        bulk = null;
+      }
+    }
+    if (bulk instanceof Map) for (const k of chunk) out.set(k, (bulk.get(k) as string | null | undefined) ?? null);
+    else await Promise.all(chunk.map(async (k) => out.set(k, await kv.get(k))));
+  }
+  return out;
+}
+
 export class MemoryKV implements KVLike {
   private m = new Map<string, string>();
   private meta = new Map<string, unknown>();

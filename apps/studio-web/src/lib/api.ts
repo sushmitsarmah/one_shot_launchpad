@@ -101,7 +101,7 @@ export const me = (token: string) => authed<MeResponse>("GET", "/api/auth/me", t
 // ---------- admin (ADMIN_ACCOUNTS only; others get 403 not_admin) ----------
 export type WaitlistCounts = { total: number; pending: number; approved: number; revoked: number };
 export const adminWaitlist = (token: string) =>
-  authed<{ entries: AdminWaitlistItem[]; counts: WaitlistCounts; truncated: boolean }>("GET", "/api/admin/waitlist", token);
+  authed<{ entries: AdminWaitlistItem[]; counts: WaitlistCounts; allowed: AdminAllowedItem[]; truncated: boolean }>("GET", "/api/admin/waitlist", token);
 export const adminAllowed = (token: string) => authed<{ allowed: AdminAllowedItem[]; truncated: boolean }>("GET", "/api/admin/allowed", token);
 export const adminAction = (action: "approve" | "revoke" | "remove", accounts: string[], token: string) =>
   authed<{ results: AdminResult[] }>("POST", `/api/admin/${action}`, token, { accounts });

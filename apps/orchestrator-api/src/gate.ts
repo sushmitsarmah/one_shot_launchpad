@@ -10,7 +10,7 @@
  */
 import { NOT_ADMIN, NOT_WHITELISTED, type AdminAllowedItem, type AdminResult, type AdminWaitlistItem, type WaitlistRequest } from "@osl/schema";
 import { AuthError } from "./auth";
-import type { KVLike } from "./sites";
+import { getMany, type KVLike } from "./sites";
 
 export interface GateConfig {
   locked: boolean;
@@ -77,7 +77,7 @@ export interface WaitlistEntry {
   revokedAt?: number;
 }
 
-/** Entries are written with themselves as KV metadata, so the admin list needs no per-key reads. */
+/** Entries are also written as KV metadata, so `wrangler kv key list --prefix waitlist:` shows them inline. */
 const putEntry = (kv: KVLike, e: WaitlistEntry) => kv.put(waitlistKey(e.account), JSON.stringify(e), { metadata: e });
 
 async function getEntry(kv: KVLike, account: string): Promise<WaitlistEntry | null> {
@@ -125,44 +125,72 @@ export async function listAll(kv: KVLike, prefix: string, maxPages = 20): Promis
 }
 
 
-/** Everyone on the allowlist: admins, ALLOWED_ACCOUNTS and KV approvals. */
-export async function listAllowed(kv: KVLike, cfg: GateConfig): Promise<{ allowed: AdminAllowedItem[]; truncated: boolean }> {
-  const { keys, truncated } = await listAll(kv, ALLOW_PREFIX);
-  const out = new Map<string, AdminAllowedItem>();
-  for (const k of keys) {
-    const account = k.name.slice(ALLOW_PREFIX.length);
-    const m = (k.metadata ?? {}) as Partial<AllowEntry>;
-    out.set(account, { account, source: "kv", approvedAt: m.approvedAt ?? null, approvedBy: m.approvedBy ?? null });
+const parse = <T>(raw: string | null | undefined): T | null => {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
   }
+};
+
+/**
+ * KV list() is eventually consistent (results can lag writes by ~60 s), so list() is only used to find
+ * keys; values and allow: state are re-read with (bulk) get, which sees recent writes.
+ */
+async function freshWaitlist(kv: KVLike): Promise<{ entries: WaitlistEntry[]; allow: Map<string, AllowEntry>; truncated: boolean }> {
+  const wl = await listAll(kv, WAITLIST_PREFIX);
+  const names = wl.keys.map((k) => k.name);
+  const accounts = names.map((n) => n.slice(WAITLIST_PREFIX.length));
+  const [values, allows] = await Promise.all([getMany(kv, names), getMany(kv, accounts.map(allowKey))]);
+  const entries: WaitlistEntry[] = [];
+  const allow = new Map<string, AllowEntry>();
+  for (const a of accounts) {
+    const e = parse<WaitlistEntry>(values.get(waitlistKey(a))); // null = removed since the list was cached
+    if (e) entries.push(e);
+    const al = parse<AllowEntry>(allows.get(allowKey(a)));
+    if (al) allow.set(a, al);
+  }
+  return { entries, allow, truncated: wl.truncated };
+}
+
+/** Everyone on the allowlist: admins, ALLOWED_ACCOUNTS and KV approvals. */
+export async function listAllowed(kv: KVLike, cfg: GateConfig, fresh?: Map<string, AllowEntry>): Promise<{ allowed: AdminAllowedItem[]; truncated: boolean }> {
+  const { keys, truncated } = await listAll(kv, ALLOW_PREFIX);
+  const listed = keys.map((k) => k.name.slice(ALLOW_PREFIX.length));
+  const values = await getMany(kv, listed.map(allowKey));
+  const out = new Map<string, AdminAllowedItem>();
+  const add = (account: string, e: AllowEntry) =>
+    out.set(account, { account, source: "kv", approvedAt: e.approvedAt ?? null, approvedBy: e.approvedBy ?? null });
+  for (const a of listed) {
+    const e = parse<AllowEntry>(values.get(allowKey(a))); // null = revoked since the list was cached
+    if (e) add(a, e);
+  }
+  for (const [a, e] of fresh ?? []) add(a, e); // approvals newer than the cached list
   for (const a of cfg.allowedAccounts) out.set(a, { account: a, source: "env", approvedAt: null, approvedBy: null });
   for (const a of cfg.adminAccounts ?? []) out.set(a, { account: a, source: "admin", approvedAt: null, approvedBy: null });
   return { allowed: [...out.values()].sort((a, b) => a.account.localeCompare(b.account)), truncated };
 }
 
 /** Waitlist with effective status (approved = currently on the allowlist), newest first. */
-export async function listWaitlist(kv: KVLike, cfg: GateConfig): Promise<{ entries: AdminWaitlistItem[]; truncated: boolean }> {
-  const [wl, al] = await Promise.all([listAll(kv, WAITLIST_PREFIX), listAllowed(kv, cfg)]);
+export async function listWaitlist(kv: KVLike, cfg: GateConfig): Promise<{ entries: AdminWaitlistItem[]; allowed: AdminAllowedItem[]; truncated: boolean }> {
+  const wl = await freshWaitlist(kv);
+  const al = await listAllowed(kv, cfg, wl.allow);
   const allowed = new Map(al.allowed.map((a) => [a.account, a]));
-  const entries: AdminWaitlistItem[] = [];
-  for (const k of wl.keys) {
-    // Older entries (before metadata was written) fall back to a read.
-    const e = (k.metadata as WaitlistEntry | undefined) ?? (await getEntry(kv, k.name.slice(WAITLIST_PREFIX.length)));
-    if (!e) continue;
+  const entries: AdminWaitlistItem[] = wl.entries.map((e) => {
     const a = allowed.get(e.account);
-    entries.push({
+    return {
       account: e.account,
       contact: e.contact ?? null,
       joinedAt: e.createdAt,
       status: a ? "approved" : e.status === "revoked" ? "revoked" : "pending",
-      approvedAt: a?.approvedAt ?? e.approvedAt ?? null,
-      approvedBy: a?.approvedBy ?? e.approvedBy ?? null,
-    });
-  }
+      approvedAt: a?.approvedAt ?? null,
+      approvedBy: a?.approvedBy ?? null,
+    };
+  });
   entries.sort((x, y) => y.joinedAt - x.joinedAt);
-  return { entries, truncated: wl.truncated || al.truncated };
+  return { entries, allowed: al.allowed, truncated: wl.truncated || al.truncated };
 }
-
-export type { AdminResult };
 
 /** Writes `allow:<account>` and marks the waitlist entry (if any) approved. */
 export async function approveAccounts(kv: KVLike, accounts: string[], by: string, now = Date.now()): Promise<AdminResult[]> {

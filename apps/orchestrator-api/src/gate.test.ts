@@ -241,6 +241,27 @@ describe("KV list pagination", () => {
   });
 });
 
+describe("stale KV list()", () => {
+  test("admin view reflects approvals/removals the cached list hasn't caught up with", async () => {
+    const kv = new MemoryKV();
+    await addToWaitlist(kv, { account: "a.testnet" }, 1);
+    await addToWaitlist(kv, { account: "b.testnet" }, 2);
+    const snapshot = await kv.list({ prefix: "waitlist:" });
+    const allowSnap = await kv.list({ prefix: "allow:" });
+    const stale: KVLike = {
+      get: (k) => kv.get(k),
+      put: (k, v, o) => kv.put(k, v, o),
+      delete: (k) => kv.delete(k),
+      list: async (o) => (o.prefix === "waitlist:" ? snapshot : allowSnap), // list frozen before the writes below
+    };
+    await approveAccounts(stale, ["a.testnet", "walk-in.testnet"], "boss.testnet", 10);
+    await stale.delete!(waitlistKey("b.testnet"));
+    const r = await listWaitlist(stale, { locked: true, allowedAccounts: [] });
+    expect(r.entries.map((e) => [e.account, e.status])).toEqual([["a.testnet", "approved"]]);
+    expect(r.allowed.map((a) => a.account)).toContain("a.testnet");
+  });
+});
+
 describe("admin API", () => {
   const authed = async (account: string) => (await (await sessionFor(account)).json()).token as string;
   const get = (path: string, token?: string) => app.request(path, { headers: token ? { authorization: `Bearer ${token}` } : {} });

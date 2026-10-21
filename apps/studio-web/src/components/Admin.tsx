@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AdminAllowedItem, AdminResult, AdminWaitlistItem, WaitlistStatus } from "@osl/schema";
-import { adminAction, adminAllowed, adminWaitlist, type WaitlistCounts } from "../lib/api";
+import { adminAction, adminWaitlist, type WaitlistCounts } from "../lib/api";
 
 type Filter = "all" | WaitlistStatus;
 type Action = "approve" | "revoke" | "remove";
@@ -27,11 +27,11 @@ export default function Admin({ getToken, onAuthError }: { getToken: () => Promi
     try {
       const token = await getToken();
       if (!token) return;
-      const [w, a] = await Promise.all([adminWaitlist(token), adminAllowed(token)]);
+      const w = await adminWaitlist(token);
       setEntries(w.entries);
       setCounts(w.counts);
-      setAllowed(a.allowed);
-      setTruncated(w.truncated || a.truncated);
+      setAllowed(w.allowed);
+      setTruncated(w.truncated);
       setSel((s) => new Set([...s].filter((x) => w.entries.some((e) => e.account === x))));
     } catch (e) {
       setMsg({ kind: "err", text: (e as Error).message });
