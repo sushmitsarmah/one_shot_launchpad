@@ -183,7 +183,7 @@ bun run allow you.testnet && bun run deploy:api
 
 ### Waitlist signups
 
-`POST /api/whitelist` `{ "account": "<near id>", "contact"?: "<email or @handle, ≤100 chars>" }` (body ≤ 1 KiB) stores `waitlist:<account>` → `{account, contact, createdAt, updatedAt}` in the `SITES` KV namespace (`yeetpad-sites`). It is idempotent (`already: true` on repeats; the first `createdAt` is kept, a new contact updates the entry) and soft rate-limited to 10 signups per IP per hour (`wlrl:<ip>:<window>` keys with a TTL). There is no listing endpoint; read the list with wrangler (from `apps/orchestrator-api`):
+`POST /api/whitelist` `{ "account": "<near id>", "contact"?: "<email or @handle, ≤100 chars>" }` (body ≤ 1 KiB) stores `waitlist:<account>` → `{account, contact, createdAt, updatedAt}` in the `SITES` KV namespace (`yeetpad-sites`). It is idempotent (`already: true` on repeats; the first `createdAt` is kept, a new contact updates the entry) and soft rate-limited to 10 signups per IP per hour (IPv6 counted per /64; `wlrl:<ip>:<window>` keys with a TTL). There is no listing endpoint; read the list with wrangler (from `apps/orchestrator-api`):
 
 ```bash
 npx wrangler kv key list --binding SITES --remote --prefix waitlist:

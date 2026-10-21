@@ -70,6 +70,17 @@ export async function addToWaitlist(kv: KVLike, req: WaitlistRequest, now = Date
   return { entry, already: false };
 }
 
+/** Rate-limit bucket for a client IP: IPv4 as-is, IPv6 by its /64 (one host usually owns a whole /64). */
+export function ipBucket(ip: string): string {
+  const v = ip.trim().toLowerCase();
+  if (!v.includes(":")) return v || "unknown";
+  const [head, tail = ""] = v.split("::");
+  const h = head ? head.split(":") : [];
+  const t = v.includes("::") ? (tail ? tail.split(":") : []) : [];
+  const groups = v.includes("::") ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t] : h;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
 /**
  * Fixed-window per-IP counter in KV (`wlrl:<ip>:<window>`, auto-expiring). KV is eventually
  * consistent, so this is a soft limit that stops casual spam, not a hard guarantee.
@@ -83,7 +94,7 @@ export async function takeRateLimit(
   windowS = WAITLIST_RATE_WINDOW_S,
 ): Promise<boolean> {
   const window = Math.floor(now / 1000 / windowS);
-  const key = `wlrl:${ip}:${window}`;
+  const key = `wlrl:${ipBucket(ip)}:${window}`;
   const n = Number((await kv.get(key)) ?? 0) || 0;
   if (n >= limit) return false;
   await kv.put(key, String(n + 1), { expirationTtl: Math.max(60, windowS * 2) });

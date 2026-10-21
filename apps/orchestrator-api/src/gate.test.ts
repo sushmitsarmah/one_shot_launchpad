@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { KeyPair } from "near-api-js";
 import { NOT_WHITELISTED, WaitlistRequest } from "@osl/schema";
 import { signIn } from "./test-helpers";
-import { addToWaitlist, isAllowed, takeRateLimit, waitlistKey, WAITLIST_RATE_LIMIT } from "./gate";
+import { addToWaitlist, ipBucket, isAllowed, takeRateLimit, waitlistKey, WAITLIST_RATE_LIMIT } from "./gate";
 import { kvStore, type KVLike } from "./sites";
 
 const RECIPIENT = "launch-vault.gate.testnet";
@@ -173,6 +173,11 @@ describe("POST /api/whitelist", () => {
     }
     expect((await json("/api/whitelist", { account: "rl-over.testnet" }, { ip: "9.9.9.9" })).status).toBe(429);
     expect((await json("/api/whitelist", { account: "rl-other.testnet" }, { ip: "8.8.8.8" })).status).toBe(200);
+    // rotating addresses inside one IPv6 /64 share a bucket
+    for (let i = 0; i < WAITLIST_RATE_LIMIT; i++) {
+      expect((await json("/api/whitelist", { account: `rl6-${i}.testnet` }, { ip: `2a04:4e41:80:2614::${i + 1}` })).status).toBe(200);
+    }
+    expect((await json("/api/whitelist", { account: "rl6-over.testnet" }, { ip: "2a04:4e41:80:2614::ffff" })).status).toBe(429);
   });
 
   test("no public listing endpoint", async () => {
@@ -192,6 +197,13 @@ describe("waitlist store helpers", () => {
     const b = await addToWaitlist(kv, { account: "x.testnet", contact: "x@y.io" }, 2000);
     expect(b.already).toBe(true);
     expect(b.entry).toEqual({ account: "x.testnet", contact: "x@y.io", createdAt: 1000, updatedAt: 2000 });
+  });
+  test("IPv6 is bucketed by /64", () => {
+    expect(ipBucket("1.2.3.4")).toBe("1.2.3.4");
+    expect(ipBucket("2a04:4e41:80:2614::314d:2614")).toBe("2a04:4e41:80:2614::/64");
+    expect(ipBucket("2a04:4e41:0080:2614:1:2:3:4")).toBe("2a04:4e41:80:2614::/64");
+    expect(ipBucket("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(ipBucket("::1")).toBe("0:0:0:0::/64");
   });
   test("rate limit window resets", async () => {
     const kv = mem();
