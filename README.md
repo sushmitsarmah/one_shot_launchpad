@@ -1,4 +1,6 @@
-# one_shot_launchpad (NEAR testnet)
+# Yeetpad (NEAR testnet)
+
+https://yeetpad.fun · repo, package and Worker names still use `one_shot_launchpad` / `one-shot-launchpad`.
 
 Land → connect a NEAR wallet → deposit NEAR as NEAR AI credits → generate a token/site idea with an LLM → launch a NEP-141 token owned by you. **Testnet only.**
 
@@ -140,7 +142,7 @@ Never commit real `.env` files; only `.env.example` is tracked.
 `/api/generate` and `/api/launch` require `Authorization: Bearer <session>`; the account is taken from the session (an `ownerWallet` in the body must match it or the API answers 403). `/api/health`, `/api/balance/:account` and `/api/auth/session` are public.
 
 1. The studio asks the connected wallet to `signMessage` (NEP-413) once per session, with a random 32-byte nonce, `recipient` = the vault contract id and the message
-   `Sign in to One Shot Launchpad\naccount: <id>\nissued: <ISO time>`. Signing is free (no transaction).
+   `Sign in to Yeetpad\naccount: <id>\nissued: <ISO time>` (the old "One Shot Launchpad" title is still accepted). Signing is free (no transaction).
 2. `POST /api/auth/session` with `{accountId, publicKey, signature, message, nonce, recipient, callbackUrl}`. The API rebuilds the NEP-413 payload (borsh: `u32 2147484061` tag, then `message`, `nonce[32]`, `recipient`, `Option<callbackUrl>`), sha256s it and verifies the ed25519 signature (with and without `callbackUrl`, since wallets differ). It then checks the message account matches, `issued` is at most 10 minutes old (1 minute of clock skew allowed), the recipient is `AUTH_RECIPIENT`, the nonce wasn't used before (best-effort in-memory cache), and, unless `NEAR_MOCK=1`, that the key is a **FullAccess** key of the account (`view_access_key`).
 3. It returns an HMAC-SHA256 token (`base64url(json{sub,exp}).base64url(mac)`, keyed by `SESSION_SECRET`) valid for 24h. The studio keeps it in `localStorage` and clears it on sign-out, account change or a 401.
 
@@ -165,7 +167,7 @@ Sub-accounts are created with the parent's public key. Re-running redeploys code
 
 ## Cloudflare deploy
 
-Live (testnet): frontend https://one-shot-launchpad.sushmitsarmah.workers.dev, API https://one-shot-launchpad-api.sushmitsarmah.workers.dev
+Live (testnet): frontend https://yeetpad.fun (custom domain, once attached) and https://one-shot-launchpad.sushmitsarmah.workers.dev, API https://one-shot-launchpad-api.sushmitsarmah.workers.dev
 
 ### Frontend (studio-web): Workers static assets via Workers Builds
 
@@ -195,7 +197,7 @@ openssl rand -hex 32               | npx -y wrangler@4.86.0 secret put SESSION_S
 
 Wrangler is pinned to 4.86.0 because newer 4.x releases need Node 22 (the box has Node 20); with Node 22+ any 4.x works. `bun run deploy:api` needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the environment.
 
-A token with **Account > Workers Scripts: Edit** is enough (set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). The API is not deployed by Workers Builds; redeploy it with the command above after API changes. Keep `CORS_ORIGINS` in `vars` in sync with the frontend origin.
+A token with **Account > Workers Scripts: Edit** is enough (set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). The API is not deployed by Workers Builds; redeploy it with the command above after API changes. Keep `CORS_ORIGINS` in `vars` in sync with the frontend origins (currently `https://yeetpad.fun`, `https://www.yeetpad.fun`, the workers.dev URL and `http://localhost:4321`). The NEP-413 recipient is the vault id, not the origin, so adding a domain needs no auth change.
 
 ## Known limitations / later
 

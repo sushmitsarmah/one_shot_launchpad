@@ -57,7 +57,7 @@ app.onError((err, c) => {
   return c.json({ error: msg }, status);
 });
 
-app.get("/", (c) => c.json({ ok: true, service: "one_shot_launchpad orchestrator", network: config.networkId }));
+app.get("/", (c) => c.json({ ok: true, service: "yeetpad orchestrator", network: config.networkId }));
 app.get("/api/health", (c) =>
   c.json({
     ok: true,

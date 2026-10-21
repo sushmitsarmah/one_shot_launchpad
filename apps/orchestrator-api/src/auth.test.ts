@@ -120,3 +120,13 @@ describe("session tokens", () => {
     await rejects(verifySession(old.token, "s3cret"), /expired/);
   });
 });
+
+describe("sign-in message", () => {
+  test("new Yeetpad title and the pre-rebrand title both parse", async () => {
+    const { buildSignInMessage, parseSignInMessage } = await import("@osl/schema");
+    expect(buildSignInMessage("alice.testnet").startsWith("Sign in to Yeetpad\n")).toBe(true);
+    const old = "Sign in to One Shot Launchpad\naccount: alice.testnet\nissued: 2026-10-21T10:00:00.000Z";
+    expect(parseSignInMessage(old)?.accountId).toBe("alice.testnet");
+    expect(parseSignInMessage("Sign in to Evilpad\naccount: alice.testnet\nissued: 2026-10-21T10:00:00.000Z")).toBeNull();
+  });
+});

@@ -17,6 +17,6 @@
     "VAULT_CONTRACT": "launch-vault.osl-launchpad-5786.testnet",
     "FT_FACTORY_CONTRACT": "ft-factory.osl-launchpad-5786.testnet",
     "RELAYER_ACCOUNT_ID": "osl-launchpad-5786.testnet",
-    "CORS_ORIGINS": "https://one-shot-launchpad.sushmitsarmah.workers.dev,http://localhost:4321"
+    "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad.sushmitsarmah.workers.dev,http://localhost:4321"
   }
 }

@@ -57,7 +57,7 @@ export function mockIdea(prompt: string): LaunchIdea {
       name: `${name} Coin`,
       ticker: `${base}${hash % 100}`,
       tagline: `The community token for ${name.toLowerCase()} lovers on NEAR.`,
-      description: `${name} Coin is a playful NEP-141 token born from the prompt "${prompt.slice(0, 200)}". Launched in one shot on NEAR testnet.`,
+      description: `${name} Coin is a playful NEP-141 token born from the prompt "${prompt.slice(0, 200)}". Yeeted onto NEAR testnet with Yeetpad.`,
       colors: { primary: hue(0), secondary: hue(4), accent: hue(8), background: "#0b0d12", text: "#f5f7fa" },
     }),
   );

@@ -133,12 +133,13 @@ export const SessionResponse = z.object({
 export type SessionResponse = z.infer<typeof SessionResponse>;
 
 /** Canonical sign-in message. The API parses `account` and `issued` back out of it. */
-export const SIGN_IN_TITLE = "Sign in to One Shot Launchpad";
+export const SIGN_IN_TITLE = "Sign in to Yeetpad";
 export function buildSignInMessage(accountId: string, issuedAt: Date = new Date()): string {
   return `${SIGN_IN_TITLE}\naccount: ${accountId}\nissued: ${issuedAt.toISOString()}`;
 }
 export function parseSignInMessage(message: string): { accountId: string; issuedAt: number } | null {
-  const m = /^Sign in to One Shot Launchpad\naccount: (\S+)\nissued: (\S+)$/.exec(message);
+  // The pre-rebrand title is still accepted so tabs opened before the rename keep working.
+  const m = /^Sign in to (?:Yeetpad|One Shot Launchpad)\naccount: (\S+)\nissued: (\S+)$/.exec(message);
   if (!m) return null;
   const issuedAt = Date.parse(m[2]);
   return Number.isFinite(issuedAt) ? { accountId: m[1], issuedAt } : null;
