@@ -1,0 +1,15 @@
+[package]
+name = "integration-tests"
+edition = "2021"
+version = "0.1.0"
+publish = false
+
+# Standalone workspace: near-workspaces' dependency tree conflicts with
+# near-sdk's unit-testing feature when resolved together.
+[workspace]
+
+[dev-dependencies]
+near-workspaces = "0.23"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+anyhow = "1"
