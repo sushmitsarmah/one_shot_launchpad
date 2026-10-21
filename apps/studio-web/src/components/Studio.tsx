@@ -116,7 +116,7 @@ export default function Studio() {
       <section className="card">
         <div className="row between">
           <div>
-            <div className="muted small">Connected</div>
+            <div className="muted small">1. Wallet connected</div>
             <strong>{account}</strong>{" "}
             {session ? (
               <span className="badge badge-ok" title={`Session valid until ${new Date(session.expiresAt).toLocaleString()}`}>✓ verified</span>
@@ -289,6 +289,22 @@ export default function Studio() {
   );
 }
 
+/** True if `fg` has enough contrast on `bg` (WCAG ratio >= 3, fine for large headings). */
+function readable(fg: string, bg: string) {
+  const lum = (hex: string) => {
+    let h = hex.replace("#", "");
+    if (h.length === 3) h = [...h].map((x) => x + x).join("");
+    const [r, g, b] = [0, 2, 4].map((i) => {
+      const v = parseInt(h.slice(i, i + 2), 16) / 255;
+      return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [a, b] = [lum(fg), lum(bg)];
+  if (Number.isNaN(a) || Number.isNaN(b)) return true;
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) >= 3;
+}
+
 function IdeaCard({
   idea,
   onTicker,
@@ -309,7 +325,7 @@ function IdeaCard({
             <input type="checkbox" checked={picked} onChange={(e) => onPick(e.target.checked)} /> launch
           </label>
         )}
-        <h3 style={{ color: c.primary }}>{idea.name}</h3>
+        <h3 style={{ color: readable(c.primary, c.background) ? c.primary : c.text }}>{idea.name}</h3>
         <label className="ticker" style={{ background: c.accent, color: c.background }}>
           $
           <input
