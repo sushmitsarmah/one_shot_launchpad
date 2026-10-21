@@ -20,7 +20,7 @@
 .tk-tagline { font-size: clamp(1.1rem, 2.6vw, 1.45rem); font-weight: 700; margin: 0 0 1.4rem; color: var(--tk-secondary); }
 .tk-ctas { display: flex; gap: 0.8rem; flex-wrap: wrap; }
 .tk-ctas .btn-lg { --bg: var(--tk-primary); }
-.tk-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.4rem; padding-top: 2.4rem; }
+.tk-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 1.4rem; padding-top: 2.4rem; }
 .tk-card { background: var(--white); border: 3px solid var(--ink); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.3rem 1.4rem; }
 .tk-card:nth-child(odd) { transform: rotate(-0.6deg); }
 .tk-card:nth-child(even) { transform: rotate(0.6deg); }
