@@ -38,3 +38,4 @@
 .tk-made { text-align: center; margin-top: 2.6rem; color: var(--ink-soft); font-weight: 500; }
 .tk-made a { color: var(--pink); font-weight: 700; }
 @media (max-width: 560px) { .tk-card { transform: none !important; } }
+.tk-ga { margin-top: 0.4rem; font-size: 0.8rem; }

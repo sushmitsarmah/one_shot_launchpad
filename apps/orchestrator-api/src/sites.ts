@@ -61,14 +61,37 @@ export async function putSite(site: SiteConfig): Promise<SiteConfig> {
 
 /** Looks up a site by ticker or slug. */
 export async function getSite(id: string): Promise<SiteConfig | null> {
+  return (await findSite(id))?.site ?? null;
+}
+
+/** Like getSite, also returning the ticker the config is stored under. */
+export async function findSite(id: string): Promise<{ site: SiteConfig; ticker: string } | null> {
+  let ticker = id;
   let raw = await store.get(key(id));
   if (!raw) {
-    const ticker = await store.get(slugKey(id));
-    if (ticker) raw = await store.get(key(ticker));
+    const t = await store.get(slugKey(id));
+    if (t) {
+      ticker = t;
+      raw = await store.get(key(t));
+    }
   }
   if (!raw) return null;
   const parsed = SiteConfig.safeParse(JSON.parse(raw));
-  return parsed.success ? parsed.data : null;
+  return parsed.success ? { site: parsed.data, ticker } : null;
+}
+
+/** Overwrites the stored config for `ticker` (slug index untouched). */
+export async function saveSite(ticker: string, site: SiteConfig) {
+  await store.put(key(ticker), JSON.stringify(site));
+}
+
+/**
+ * Page views counted by the frontend Worker (`views:<ticker>`). KV is eventually consistent and the
+ * counter is a read-modify-write, so concurrent views can be lost: treat it as approximate.
+ */
+export async function getViews(ticker: string): Promise<number> {
+  const n = Number(await store.get(`views:${ticker}`));
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
 /** Public site URL; pass the slug when known, else the ticker. */

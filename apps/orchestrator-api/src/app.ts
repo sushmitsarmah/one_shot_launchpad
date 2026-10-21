@@ -6,6 +6,7 @@ import {
   GenerateRequest,
   LaunchRequest,
   SITE_ID_RE,
+  SiteSettingsRequest,
   Ticker,
   type BatchLaunchResponse,
   type LaunchedToken,
@@ -19,7 +20,7 @@ import {
 import { config } from "./config";
 import { generateIdeas } from "./llm";
 import { tokenIconDataUri } from "./icon";
-import { buildSiteConfig, compactSite, getSite, putSite, siteStoreKind, siteUrl } from "./sites";
+import { buildSiteConfig, compactSite, findSite, getSite, getViews, putSite, saveSite, siteStoreKind, siteUrl } from "./sites";
 import { AuthError, consumeNonceInMemory, issueSession, verifySession, verifySignIn } from "./auth";
 import {
   deductAiCompute,
@@ -55,7 +56,7 @@ app.use(
   cors({
     // Resolved per request so Worker env bindings (applied on first request) are honoured.
     origin: (origin) => (config.corsOrigins.includes("*") ? "*" : config.corsOrigins.includes(origin) ? origin : null),
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     maxAge: 600,
   }),
@@ -240,8 +241,11 @@ function parseCompact(site: string | null): { tagline?: string; description?: st
 app.get("/api/site/:id", async (c) => {
   const id = c.req.param("id").toLowerCase();
   if (!SITE_ID_RE.test(id)) return c.json({ error: "invalid ticker or slug" }, 400);
-  const kv = await getSite(id);
-  if (kv) return c.json({ source: "kv", siteConfig: kv, siteUrl: siteUrl(kv.slug ?? id) });
+  const found = await findSite(id);
+  if (found) {
+    const kv = found.site;
+    return c.json({ source: "kv", siteConfig: kv, siteUrl: siteUrl(kv.slug ?? id), views: await getViews(found.ticker) });
+  }
   const ticker = id;
   if (!Ticker.safeParse(ticker).success) return c.json({ error: "no such token" }, 404);
   const rec = await getTokenRecord(ticker);
@@ -265,6 +269,22 @@ app.get("/api/site/:id", async (c) => {
   return c.json({ source: "chain", siteConfig, siteUrl: siteUrl(ticker) });
 });
 
+/** Creator settings for a token site. Owner-only: the session account must be the site's ownerWallet. */
+app.put("/api/site/:id/settings", requireSession, async (c) => {
+  const id = c.req.param("id").toLowerCase();
+  if (!SITE_ID_RE.test(id)) return c.json({ error: "invalid ticker or slug" }, 400);
+  const body = SiteSettingsRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid settings", issues: body.error.issues }, 400);
+  const found = await findSite(id);
+  if (!found) return c.json({ error: "no such token site" }, 404);
+  if (found.site.ownerWallet !== c.var.account) return c.json({ error: "only the token's creator can change its settings" }, 403);
+  const gaId = body.data.gaId || undefined;
+  const site = { ...found.site, analytics: gaId ? { ...found.site.analytics, gaId } : undefined };
+  if (!gaId && site.analytics === undefined) delete (site as { analytics?: unknown }).analytics;
+  await saveSite(found.ticker, site);
+  return c.json({ ok: true, ticker: found.ticker, gaId: gaId ?? null });
+});
+
 const toLaunched = async (r: TokenRecord): Promise<LaunchedToken> => {
   const kv = await getSite(r.ticker);
   const s = parseCompact(r.site);
@@ -277,6 +297,8 @@ const toLaunched = async (r: TokenRecord): Promise<LaunchedToken> => {
     tagline: kv?.branding.tagline ?? s.tagline ?? null,
     colors: kv?.theme.colors ?? s.colors ?? null,
     slug: kv?.slug ?? null,
+    views: await getViews(r.ticker),
+    gaId: kv?.analytics?.gaId ?? null,
     siteUrl: siteUrl(kv?.slug ?? r.ticker),
     explorerUrl: `${config.explorerBase}/address/${r.token_id}`,
   };

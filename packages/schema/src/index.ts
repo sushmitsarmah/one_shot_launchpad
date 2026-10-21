@@ -58,6 +58,8 @@ export const SiteConfig = z.object({
   iconDataUri: z.string().optional(),
   /** URL slug from the token name (`/t/<slug>`); unique per token. */
   slug: z.string().optional(),
+  /** Creator-owned settings (set via PUT /api/site/:id/settings by the owner only). */
+  analytics: z.object({ gaId: z.string().regex(/^G-[A-Z0-9]{4,12}$/).optional() }).optional(),
 });
 export type SiteConfig = z.infer<typeof SiteConfig>;
 
@@ -126,6 +128,8 @@ export type BatchLaunchResponse = z.infer<typeof BatchLaunchResponse>;
 export const LaunchedToken = z.object({
   ticker: z.string(),
   slug: z.string().nullable(),
+  views: z.number().int().nonnegative().optional(),
+  gaId: z.string().nullable().optional(),
   tokenId: z.string(),
   ownerId: z.string(),
   createdAt: z.number(), // unix ms
@@ -210,3 +214,11 @@ export function slugify(name: string, max = 40): string {
 
 /** Path ids accepted by /t/<id> and /api/site/<id>: a ticker or a slug. */
 export const SITE_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+/** Google Analytics 4 measurement id. Strict: only this shape is ever injected into token pages. */
+export const GA_ID_RE = /^G-[A-Z0-9]{4,12}$/;
+export const SiteSettingsRequest = z.object({
+  /** Set to a GA4 id, or null / "" to clear. */
+  gaId: z.union([z.string().trim().toUpperCase().regex(GA_ID_RE, "gaId must look like G-XXXXXXXX"), z.literal(""), z.null()]),
+});
+export type SiteSettingsRequest = z.infer<typeof SiteSettingsRequest>;

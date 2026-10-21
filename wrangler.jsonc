@@ -11,6 +11,6 @@
     "not_found_handling": "404-page",
     "run_worker_first": ["/t/*"]
   },
-  // Token site configs written by the API Worker (namespace yeetpad-sites); read-only here.
+  // Token site configs written by the API Worker (namespace yeetpad-sites). Read here, plus views:<ticker> counters.
   "kv_namespaces": [{ "binding": "SITES", "id": "39411e131b9049f3b4731d475866e58a" }]
 }

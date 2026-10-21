@@ -195,3 +195,43 @@ describe("slugs", () => {
     expect(mine.launches.map((l: { slug: string }) => l.slug)).toEqual(["same-name-2", "same-name"]);
   });
 });
+
+describe("creator site settings", () => {
+  test("GA id validation", async () => {
+    const { SiteSettingsRequest, GA_ID_RE } = await import("@osl/schema");
+    for (const ok of ["G-TEST1234", "g-abcd1234", " G-ABCD ", "G-ABCDEFGHIJ12"]) expect(SiteSettingsRequest.safeParse({ gaId: ok }).success).toBe(true);
+    for (const bad of ["UA-12345-1", "G-ABC", "G-ABCDEFGHIJ123", "G-TEST1234'</script>", "G-TE ST", "GTM-ABCD12", 42])
+      expect(SiteSettingsRequest.safeParse({ gaId: bad }).success).toBe(false);
+    expect(SiteSettingsRequest.safeParse({ gaId: null }).success).toBe(true);
+    expect(SiteSettingsRequest.parse({ gaId: "g-abcd1234" }).gaId).toBe("G-ABCD1234");
+    expect(GA_ID_RE.test("G-TEST1234<x>")).toBe(false);
+  });
+
+  test("owner-only settings", async () => {
+    const owner = await session("jade.testnet");
+    const other = await session("mallory.testnet");
+    const idea = {
+      name: "Settings Token", ticker: "settok", tagline: "settings test", description: "Owner-only settings endpoint test token.",
+      colors: { primary: "#ff4fa3", secondary: "#4cc9f0", accent: "#c6f432", background: "#1b1433", text: "#fff3dc" },
+    };
+    expect((await post("/api/launch/batch", { ideas: [idea] }, owner)).status).toBe(200);
+    const put = (id: string, body: unknown, t: string | null) =>
+      app.request(`/api/site/${id}/settings`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", ...(t ? { authorization: `Bearer ${t}` } : {}) },
+        body: JSON.stringify(body),
+      });
+    expect((await put("settings-token", { gaId: "G-TEST1234" }, null)).status).toBe(401);
+    expect((await put("settings-token", { gaId: "G-TEST1234" }, other)).status).toBe(403);
+    expect((await put("settings-token", { gaId: "<script>" }, owner)).status).toBe(400);
+    expect((await put("no-such-token", { gaId: "G-TEST1234" }, owner)).status).toBe(404);
+    const ok = await put("settings-token", { gaId: "G-TEST1234" }, owner);
+    expect(ok.status).toBe(200);
+    expect((await (await app.request("/api/site/settok")).json()).siteConfig.analytics.gaId).toBe("G-TEST1234");
+    const mine = await (await app.request("/api/launches/jade.testnet")).json();
+    expect(mine.launches[0].gaId).toBe("G-TEST1234");
+    expect(mine.launches[0].views).toBe(0);
+    expect((await put("settok", { gaId: null }, owner)).status).toBe(200);
+    expect((await (await app.request("/api/site/settings-token")).json()).siteConfig.analytics).toBeUndefined();
+  });
+});

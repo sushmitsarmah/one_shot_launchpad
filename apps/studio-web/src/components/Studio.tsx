@@ -3,11 +3,11 @@ import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type Launch
 import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, signOut } from "../lib/wallet";
 import { getVaultBalance } from "../lib/near";
-import { generate, launchBatch, myLaunches, UnauthorizedError } from "../lib/api";
+import { generate, launchBatch, myLaunches, saveSiteSettings, UnauthorizedError } from "../lib/api";
 import { clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { VAULT_CONTRACT } from "../lib/config";
 
-type Busy = null | "deposit" | "generate" | "launch" | "verify";
+type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings";
 
 export default function Studio() {
   const [account, setAccount] = useState<string | null>(null);
@@ -19,6 +19,7 @@ export default function Studio() {
   const [picked, setPicked] = useState<boolean[]>([]);
   const [result, setResult] = useState<BatchLaunchResponse | null>(null);
   const [launches, setLaunches] = useState<LaunchedToken[] | null>(null);
+  const [openSettings, setOpenSettings] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<SessionResponse | null>(null);
@@ -184,8 +185,29 @@ export default function Studio() {
                   <span className="ml-meta small">
                     <span className="ml-tk">${l.ticker.toUpperCase()}</span>
                     <span className="muted when">{fmtWhen(l.createdAt)}</span>
+                    <span className="ml-views" title="Page views (approximate, no cookies)">👀 {l.views ?? 0}</span>
                     <a href={l.explorerUrl} target="_blank" rel="noreferrer">explorer ↗</a>
+                    {l.ownerId === account && (
+                      <button className="link" onClick={() => setOpenSettings(openSettings === l.ticker ? null : l.ticker)}>
+                        settings
+                      </button>
+                    )}
                   </span>
+                  {openSettings === l.ticker && (
+                    <SiteSettings
+                      current={l.gaId ?? null}
+                      busy={busy !== null}
+                      onSave={(gaId) =>
+                        run("settings", async () => {
+                          const token = await authToken(account);
+                          if (!token) return;
+                          await saveSiteSettings(l.slug ?? l.ticker, gaId, token);
+                          setOpenSettings(null);
+                          await loadLaunches();
+                        })
+                      }
+                    />
+                  )}
                 </div>
               </li>
             ))}
@@ -308,6 +330,35 @@ export default function Studio() {
 
       {error && <p className="error">{error}</p>}
       </div>
+    </div>
+  );
+}
+
+const GA_RE = /^G-[A-Z0-9]{4,12}$/;
+
+/** Creator settings for a token page: optional own Google Analytics 4 id. */
+function SiteSettings({ current, busy, onSave }: { current: string | null; busy: boolean; onSave: (gaId: string | null) => void }) {
+  const [v, setV] = useState(current ?? "");
+  const id = v.trim().toUpperCase();
+  const ok = id === "" || GA_RE.test(id);
+  return (
+    <div className="ml-settings">
+      <label className="small">
+        Your Google Analytics ID <span className="muted">(GA4, optional)</span>
+        <input value={v} placeholder="G-XXXXXXXXXX" spellCheck={false} onChange={(e) => setV(e.target.value)} aria-invalid={!ok} />
+      </label>
+      {!ok && <span className="small err-inline">Looks like G- followed by 4–12 letters/digits.</span>}
+      <div className="row">
+        <button className="ghost" disabled={busy || !ok || id === (current ?? "")} onClick={() => onSave(id || null)}>
+          Save
+        </button>
+        {current && (
+          <button className="ghost" disabled={busy} onClick={() => onSave(null)}>
+            Clear
+          </button>
+        )}
+      </div>
+      <p className="muted small">Adds your GA tag to this token's page only. Visitors see a short note that the page may use your analytics.</p>
     </div>
   );
 }

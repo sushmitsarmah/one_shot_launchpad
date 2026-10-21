@@ -25,6 +25,21 @@ export const generate = (prompt: string, ownerWallet: string, token: string, cou
 export const launchBatch = (ownerWallet: string, ideas: LaunchIdea[], token: string) =>
   post<BatchLaunchResponse>("/api/launch/batch", { ownerWallet, ideas }, token);
 
+export async function saveSiteSettings(id: string, gaId: string | null, token: string) {
+  const r = await fetch(`${API_URL}/api/site/${encodeURIComponent(id)}/settings`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({ gaId }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) {
+    clearSession();
+    throw new UnauthorizedError(j.error ?? "session expired; verify your wallet again");
+  }
+  if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+  return j as { ok: true; ticker: string; gaId: string | null };
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(`${API_URL}${path}`);
   const j = await r.json().catch(() => ({}));

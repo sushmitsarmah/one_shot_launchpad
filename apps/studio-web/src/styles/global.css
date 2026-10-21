@@ -98,3 +98,10 @@ details summary { cursor: pointer; font-weight: 700; }
 .idea-empty span { font-size: 1.8rem; }
 .idea-empty p { margin: 0; }
 .site-header .btn-sm { white-space: nowrap; }
+.my-launches .ml-views { font-weight: 700; }
+.ml-settings { display: grid; gap: 0.5rem; margin-top: 0.5rem; padding-top: 0.6rem; border-top: 2px dashed var(--ink-soft); }
+.ml-settings label { display: grid; gap: 0.3rem; font-weight: 700; }
+.app-main .ml-settings input { font-family: var(--body); text-transform: uppercase; padding: 0.45rem 0.6rem; }
+.app-main .ml-settings button.ghost { padding: 0.45rem 0.85rem; font-size: 0.85rem; }
+.ml-settings p { margin: 0; }
+.err-inline { color: #c81e4b; font-weight: 700; }
