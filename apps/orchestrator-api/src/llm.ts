@@ -72,6 +72,7 @@ export async function generateIdea(prompt: string): Promise<LaunchIdea> {
       model: config.nearAiModel,
       messages,
       temperature: 0.9,
+      max_tokens: config.llmMaxTokens,
       response_format: {
         type: "json_schema",
         json_schema: { name: "launch_idea", strict: false, schema: launchIdeaJsonSchema as Record<string, unknown> },
@@ -85,6 +86,7 @@ export async function generateIdea(prompt: string): Promise<LaunchIdea> {
       model: config.nearAiModel,
       messages,
       temperature: 0.9,
+      max_tokens: config.llmMaxTokens,
       response_format: { type: "json_object" },
     });
     text = r.choices[0]?.message?.content;

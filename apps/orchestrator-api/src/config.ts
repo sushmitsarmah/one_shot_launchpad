@@ -12,6 +12,7 @@ export const config = {
   llmMock: flag("LLM_MOCK"),
   nearAiBaseUrl: env("NEARAI_BASE_URL", "https://cloud-api.near.ai/v1") as string,
   nearAiModel: env("NEARAI_MODEL", "z-ai/glm-5.3-flash") as string,
+  llmMaxTokens: Number(env("LLM_MAX_TOKENS", "500")),
   nearAiApiKey: env("NEARAI_API_KEY"),
 
   // NEAR testnet
