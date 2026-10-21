@@ -52,6 +52,11 @@ export type ListOnChoice = "none" | "rhea" | "nearly";
 export const launchBatch = (ownerWallet: string, ideas: LaunchIdea[], token: string, listOn: "none" | "rhea" = "none", rhea?: RheaOptions) =>
   post<BatchLaunchResponse>("/api/launch/batch", { ownerWallet, ideas, listOn, ...(listOn === "rhea" ? { rhea } : {}) }, token);
 
+export async function venueStatus(): Promise<{ nearly: { enabled: boolean; reason: string | null } }> {
+  const j = await get<{ venues?: { nearly?: { enabled?: boolean; reason?: string | null } } }>("/api/health").catch(() => ({}) as never);
+  return { nearly: { enabled: j?.venues?.nearly?.enabled === true, reason: j?.venues?.nearly?.reason ?? "Nearly is not available" } };
+}
+
 export const quote = (ideas: LaunchIdea[], listOn: ListOnChoice, token: string, rhea?: RheaOptions) =>
   post<QuoteResponse>("/api/quote", { ideas, listOn, ...(listOn === "rhea" ? { rhea } : {}) }, token);
 

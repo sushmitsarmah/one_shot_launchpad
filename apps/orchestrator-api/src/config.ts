@@ -60,6 +60,12 @@ export function buildConfig(src: EnvSource = {}) {
     /** Nearly token page; empty = use the explorer. Mainnet: https://nearly.trade/token/ (unverified path). */
     nearlyTokenUrlBase: env("NEARLY_TOKEN_URL_BASE", "") as string,
     nearlyBatchChunk: Number(env("NEARLY_BATCH_CHUNK", "10")),
+    /** Off by default: Nearly's testnet factory currently fails at add_liquidity (see docs/launch-venues.md). */
+    nearlyEnabled: flag("NEARLY_ENABLED"),
+    nearlyDisabledReason: env(
+      "NEARLY_DISABLED_REASON",
+      "Nearly's testnet factory fails at add_liquidity right now (Rhea testnet DCL rejects its Deposit); enabled on mainnet.",
+    ) as string,
 
     // Auth: HMAC secret for session tokens (wrangler secret / .env). NEP-413 recipient defaults to the vault id.
     sessionSecret: env("SESSION_SECRET"),

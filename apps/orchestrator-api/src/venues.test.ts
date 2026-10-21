@@ -12,6 +12,7 @@ beforeAll(async () => {
   process.env.SESSION_SECRET = "test-secret";
   process.env.VAULT_CONTRACT = RECIPIENT;
   process.env.LOCKED = "0";
+  process.env.NEARLY_ENABLED = "1";
   ({ app } = await import("./app"));
   (await import("./config")).configureFromEnv({});
 });
@@ -50,6 +51,15 @@ describe("rhea math", () => {
 });
 
 describe("venues (mock mode)", () => {
+  test("nearly can be switched off (503 venue_disabled)", async () => {
+    const t = await token("frank.testnet");
+    const { config } = await import("./config");
+    config.nearlyEnabled = false;
+    const r = await post("/api/nearly/prepare", { ideas: [await idea(t)] }, t);
+    config.nearlyEnabled = true;
+    expect(r.status).toBe(503);
+  });
+
   test("quote: rhea adds pool + first-time DCL storage, nearly comes from quote_launch", async () => {
     const t = await token("carol.testnet");
     const ideas = [await idea(t)];

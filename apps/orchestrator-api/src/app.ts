@@ -63,6 +63,7 @@ import {
   type TokenArgs,
   type TokenRecord,
   creatorDclStorageNeeded,
+  ftBalanceOf,
   getDclPoolPoint,
   getHeld,
   listOnRhea,
@@ -117,7 +118,7 @@ app.get("/api/health", (c) =>
     maxBatch: 5,
     venues: {
       rhea: { dcl: config.dclContract, wnear: config.wnearContract, defaultFdvNear: config.rheaDefaultFdvNear },
-      nearly: { factory: config.nearlyFactory, chunk: config.nearlyBatchChunk },
+      nearly: { factory: config.nearlyFactory, chunk: config.nearlyBatchChunk, enabled: config.nearlyEnabled, reason: config.nearlyEnabled ? null : config.nearlyDisabledReason },
     },
     siteStore: siteStoreKind(),
     siteBase: config.siteBase,
@@ -244,9 +245,13 @@ app.post("/api/launch", requireSession, requireAllowed, async (c) => {
 async function listRhea(owner: string, tokenId: string, opts: RheaOptions | undefined): Promise<Listing> {
   const ticker = tokenId.split(".")[0];
   try {
+    // What the vault actually holds for this token (full supply for a fresh launch).
+    const held = await ftBalanceOf(tokenId, config.vaultContract);
+    if (held === 0n) throw new Error("the vault holds none of this token");
     const params = buildListParams({
       tokenId,
       supply: BigInt(config.tokenTotalSupply),
+      holding: held,
       decimals: config.tokenDecimals,
       fdvNear: opts?.openingFdvNear ?? config.rheaDefaultFdvNear,
       creatorPct: opts?.creatorPct ?? 0,
@@ -374,6 +379,7 @@ app.post("/api/quote", requireSession, async (c) => {
   let total = 0n;
   let rheaInfo: QuoteResponse["rhea"];
   if (listOn === "nearly") {
+    if (!config.nearlyEnabled) return c.json({ error: config.nearlyDisabledReason, code: "venue_disabled" }, 503);
     for (const idea of ideas) {
       const icon = tokenIconDataUri(idea);
       const website = siteUrl(await claimSlug(idea.name, idea.ticker));
@@ -419,6 +425,7 @@ const nearlyUrl = (tokenId: string) =>
 
 /** Builds the `launch` calls for the creator's wallet; reserves slugs so the site link is known up front. */
 app.post("/api/nearly/prepare", requireSession, requireAllowed, async (c) => {
+  if (!config.nearlyEnabled) return c.json({ error: config.nearlyDisabledReason, code: "venue_disabled" }, 503);
   const body = NearlyPrepareRequest.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
   const owner = c.var.account;

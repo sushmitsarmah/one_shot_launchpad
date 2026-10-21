@@ -70,20 +70,39 @@ if (steps.has("rhea")) {
   const after = BigInt(await view(VAULT, "get_balance", { account_id: who }));
   console.log(`rhea launch ${((Date.now() - t0) / 1000).toFixed(1)}s, credit spent ${fmt(before - after)}`);
   console.log("  launch tx:", res.explorerUrl);
-  console.log("  listing:", JSON.stringify(res.listing));
-  if (res.listing?.txHash) console.log("  listing tx:", EXPLORER + res.listing.txHash);
-  const pool = res.listing?.poolId;
-  if (pool) {
-    const p = await view(DCL, "get_pool", { pool_id: pool });
-    console.log("  get_pool:", JSON.stringify({ current_point: p?.current_point, liquidity: p?.liquidity, total_x: p?.total_x, total_y: p?.total_y, state: p?.state }));
-    const lpt = res.listing.lptId && (await view(DCL, "get_liquidity", { lpt_id: res.listing.lptId }).catch((e: Error) => ({ err: e.message })));
-    console.log("  position:", JSON.stringify({ lpt_id: lpt?.lpt_id, owner_id: lpt?.owner_id, amount: lpt?.amount, left: lpt?.left_point, right: lpt?.right_point }));
-    const sw = await view(DCL, "quote", { pool_ids: [pool], input_token: WNEAR, output_token: res.tokenId, input_amount: (NEAR / 100n).toString(), tag: null });
-    console.log(`  quote 0.01 wNEAR -> ${res.tokenId}:`, JSON.stringify(sw));
-    const bal = await view(res.tokenId, "ft_balance_of", { account_id: who });
-    const vbal = await view(res.tokenId, "ft_balance_of", { account_id: VAULT });
-    console.log(`  creator token balance ${bal}, vault token balance ${vbal}; held record:`, JSON.stringify(await view(VAULT, "get_held", { token_id: res.tokenId })));
+  await verifyRhea(res.tokenId, res.listing);
+}
+
+async function verifyRhea(tokenId: string, listing: any) {
+  console.log("  listing:", JSON.stringify(listing));
+  if (listing?.txHash) console.log("  listing tx:", EXPLORER + listing.txHash);
+  const pool = listing?.poolId;
+  if (!pool) return;
+  const p = await view(DCL, "get_pool", { pool_id: pool });
+  console.log("  get_pool:", JSON.stringify({ current_point: p?.current_point, liquidity: p?.liquidity, liquidity_x: p?.liquidity_x, total_x: p?.total_x, total_y: p?.total_y, state: p?.state }));
+  const mine = (await view(DCL, "list_liquidities", { account_id: who })) as any[];
+  for (const l of mine.filter((x) => x.pool_id === pool)) console.log("  creator position:", JSON.stringify({ lpt_id: l.lpt_id, owner_id: l.owner_id, amount: l.amount, left: l.left_point, right: l.right_point }));
+  const sw = await view(DCL, "quote", { pool_ids: [pool], input_token: WNEAR, output_token: tokenId, input_amount: (NEAR / 100n).toString(), tag: null });
+  console.log(`  quote 0.01 wNEAR -> token:`, JSON.stringify(sw));
+  console.log(`  creator token balance ${await view(tokenId, "ft_balance_of", { account_id: who })}, vault ${await view(tokenId, "ft_balance_of", { account_id: VAULT })}; held:`, JSON.stringify(await view(VAULT, "get_held", { token_id: tokenId })));
+}
+
+// Re-list a token the creator already holds (e.g. after a failed listing): send to vault, then list.
+if (process.env.RELIST) {
+  const tokenId = process.env.RELIST;
+  const bal = BigInt(await view(tokenId, "ft_balance_of", { account_id: who }));
+  const cost = 25n * 10n ** 21n;
+  const credit = BigInt(await view(VAULT, "get_balance", { account_id: who }));
+  if (credit < cost) {
+    const r = await acct.callFunctionRaw({ contractId: VAULT, methodName: "deposit_credits", args: {}, deposit: cost - credit, gas: 30n * 10n ** 12n });
+    console.log(`topped up credit by ${fmt(cost - credit)}: ${EXPLORER}${r.transaction.hash}`);
   }
+  const t = await acct.callFunctionRaw({ contractId: tokenId, methodName: "ft_transfer_call", args: { receiver_id: VAULT, amount: bal.toString(), msg: "list_on_rhea" }, deposit: 1n, gas: 50n * 10n ** 12n });
+  console.log(`sent ${bal} to vault for listing: ${EXPLORER}${t.transaction.hash}`);
+  const before = BigInt(await view(VAULT, "get_balance", { account_id: who }));
+  const res = await api("/api/list/rhea", { tokenId });
+  console.log(`relist credit spent ${fmt(before - BigInt(await view(VAULT, "get_balance", { account_id: who })))}`);
+  await verifyRhea(tokenId, res.listing);
 }
 
 async function nearly(n: number) {

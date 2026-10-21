@@ -277,6 +277,11 @@ export async function getDclPoolPoint(poolId: string): Promise<number | null> {
   }
 }
 
+export async function ftBalanceOf(tokenId: string, account: string): Promise<bigint> {
+  if (config.nearMock) return BigInt(config.tokenTotalSupply);
+  return BigInt(((await getProvider().callFunction({ contractId: tokenId, method: "ft_balance_of", args: { account_id: account } })) as string) ?? "0");
+}
+
 export async function getHeld(tokenId: string): Promise<{ creator: string; listing: boolean; lpt_id: string | null } | null> {
   if (config.nearMock) return null;
   return (await getProvider().callFunction({ contractId: config.vaultContract, method: "get_held", args: { token_id: tokenId } })) as never;

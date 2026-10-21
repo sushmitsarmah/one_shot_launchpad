@@ -69,6 +69,8 @@ export function buildListParams(opts: {
   fdvNear: number;
   creatorPct: number;
   creatorDclStorage: bigint;
+  /** Tokens the vault holds for this listing (defaults to the supply); the pool gets (100-creatorPct)% of it. */
+  holding?: bigint;
   /** Current point of an existing pool (re-listing); the FDV is then ignored. */
   existingPoint?: number | null;
 }): ListParams & { tokenIsX: boolean } {
@@ -76,7 +78,7 @@ export function buildListParams(opts: {
   const existing = opts.existingPoint ?? null;
   const pts = existing === null ? fresh : { tokenIsX: fresh.tokenIsX, ...pointsForExisting(fresh.tokenIsX, existing) };
   const creatorBps = BigInt(Math.round(opts.creatorPct * 100));
-  const pool = (opts.supply * (10_000n - creatorBps)) / 10_000n;
+  const pool = ((opts.holding ?? opts.supply) * (10_000n - creatorBps)) / 10_000n;
   return {
     tokenIsX: pts.tokenIsX,
     pool_amount: pool.toString(),

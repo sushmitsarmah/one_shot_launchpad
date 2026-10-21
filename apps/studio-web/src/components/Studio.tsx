@@ -3,7 +3,7 @@ import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type Launch
 import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, signCallsInChunks, signOut, takeRedirectedNearly } from "../lib/wallet";
 import { getVaultBalance } from "../lib/near";
-import { appLocked, generate, launchBatch, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, type ListOnChoice } from "../lib/api";
+import { appLocked, generate, launchBatch, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
 import { EXPLORER_BASE } from "../lib/config";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { WaitlistForm } from "./WaitlistForm";
@@ -37,6 +37,10 @@ export default function Studio() {
   const [q, setQ] = useState<QuoteResponse | null>(null);
   const [qErr, setQErr] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
+  const [nearlyOff, setNearlyOff] = useState<string | null>(null);
+  useEffect(() => {
+    venueStatus().then((v) => setNearlyOff(v.nearly.enabled ? null : v.nearly.reason));
+  }, []);
   const [tab, setTab] = useState<"studio" | "admin">(() => (typeof location !== "undefined" && location.hash === "#admin" ? "admin" : "studio"));
   const openTab = (t: "studio" | "admin") => {
     setTab(t);
@@ -468,11 +472,20 @@ export default function Studio() {
                 ["nearly", "Nearly", "Nearly's token + pool"],
               ] as const
             ).map(([v, label, hint]) => (
-              <button key={v} role="radio" aria-checked={listOn === v} className={listOn === v ? "on" : ""} onClick={() => setListOn(v)} title={hint}>
+              <button
+                key={v}
+                role="radio"
+                aria-checked={listOn === v}
+                className={listOn === v ? "on" : ""}
+                disabled={v === "nearly" && nearlyOff !== null}
+                onClick={() => setListOn(v)}
+                title={v === "nearly" && nearlyOff ? nearlyOff : hint}
+              >
                 {label}
               </button>
             ))}
           </div>
+          {nearlyOff && <p className="muted small">Nearly: {nearlyOff}</p>}
           <p className="muted small">
             {listOn === "none" && (
               <>Creates {chosen.length === 1 ? "a NEP-141 token" : `${chosen.length} NEP-141 tokens in one transaction`} owned by you, paid from your vault credit (a failed item is refunded).</>
