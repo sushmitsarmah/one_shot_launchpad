@@ -125,7 +125,7 @@ describe("batch + sites (mock mode)", () => {
     expect(r.status).toBe(200);
     const j = await r.json();
     expect(j.results.map((x: { ok: boolean }) => x.ok)).toEqual([true, true]);
-    expect(j.results[0].siteUrl).toBe("https://yeetpad.fun/t/alpha");
+    expect(j.results[0].siteUrl).toBe("https://yeetpad.fun/t/alpha-coin");
 
     const s = await (await app.request("/api/site/beta")).json();
     expect(s.siteConfig.branding.ticker).toBe("BETA");
@@ -149,5 +149,49 @@ describe("token icon", () => {
     const i = { ticker: "soak", colors: { primary: "#FFB347", secondary: "#87CEEB", accent: "#FF6B6B", background: "#FDF5E6", text: "#4A3728" } };
     expect(tokenIconSvg(i)).toContain("SOAK");
     expect(tokenIconDataUri(i).length).toBeLessThan(1200);
+  });
+});
+
+describe("slugs", () => {
+  test("slugify", async () => {
+    const { slugify } = await import("@osl/schema");
+    expect(slugify("Quack Chaos")).toBe("quack-chaos");
+    expect(slugify("YeetDuck Left")).toBe("yeetduck-left");
+    expect(slugify("  Café   Crème!! ")).toBe("cafe-creme");
+    expect(slugify("$DOGE -- to the 🌙 moon")).toBe("doge-to-the-moon");
+    expect(slugify("🚀🚀")).toBe("");
+    const long = slugify("A very very long token name that keeps going and going forever");
+    expect(long.length).toBeLessThanOrEqual(40);
+    expect(long.endsWith("-")).toBe(false);
+  });
+
+  test("collision suffix", async () => {
+    const { claimSlug } = await import("./sites");
+    const m = new Map<string, string>();
+    const kv = { get: async (k: string) => m.get(k) ?? null, put: async (k: string, v: string) => void m.set(k, v) };
+    expect(await claimSlug("Moon Cat", "mooncat", kv)).toBe("moon-cat");
+    m.set("slug:moon-cat", "mooncat");
+    expect(await claimSlug("Moon Cat", "mooncat", kv)).toBe("moon-cat"); // same token keeps it
+    expect(await claimSlug("Moon Cat", "mcat", kv)).toBe("moon-cat-2");
+    m.set("slug:moon-cat-2", "mcat");
+    expect(await claimSlug("Moon  Cat!", "mc3", kv)).toBe("moon-cat-3");
+    expect(await claimSlug("🚀", "rkt", kv)).toBe("rkt");
+  });
+
+  test("launches resolve by slug and ticker", async () => {
+    const t = await session("ivy.testnet");
+    const idea = (ticker: string, name: string) => ({
+      name, ticker, tagline: "slug test token", description: "Two tokens with the same name get distinct slugs.",
+      colors: { primary: "#ff4fa3", secondary: "#4cc9f0", accent: "#c6f432", background: "#1b1433", text: "#fff3dc" },
+    });
+    const r = await post("/api/launch/batch", { ideas: [idea("slugone", "Same Name"), idea("slugtwo", "Same Name")] }, t);
+    const j = await r.json();
+    expect(j.results.map((x: { siteUrl: string }) => x.siteUrl)).toEqual(["https://yeetpad.fun/t/same-name", "https://yeetpad.fun/t/same-name-2"]);
+    const bySlug = await (await app.request("/api/site/same-name-2")).json();
+    expect(bySlug.siteConfig.branding.ticker).toBe("SLUGTWO");
+    const byTicker = await (await app.request("/api/site/slugtwo")).json();
+    expect(byTicker.siteUrl).toBe("https://yeetpad.fun/t/same-name-2");
+    const mine = await (await app.request("/api/launches/ivy.testnet")).json();
+    expect(mine.launches.map((l: { slug: string }) => l.slug)).toEqual(["same-name-2", "same-name"]);
   });
 });

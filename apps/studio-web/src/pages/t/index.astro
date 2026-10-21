@@ -1,5 +1,5 @@
 ---
-// Per-token site. Served for every /t/<ticker> via public/_redirects (/t/:ticker -> /t/ 200);
+// Per-token site. Served for every /t/<slug|ticker> via public/_redirects (/t/:ticker -> /t/ 200);
 // the ticker is read from location.pathname and the SiteConfig fetched from /api/site/<ticker>.
 import Base from "../../layouts/Base.astro";
 import "../../styles/token.css";
@@ -52,17 +52,20 @@ import "../../styles/token.css";
   </main>
   <script>
     import { API_URL } from "../../lib/config";
+    const SITE_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/; // = SITE_ID_RE in @osl/schema (kept inline: no zod in this bundle)
     const root = document.getElementById("tk")!;
     const $ = (id: string) => document.getElementById(id)!;
-    const ticker = (location.pathname.split("/")[2] ?? "").toLowerCase();
+    // /t/<slug> or /t/<ticker> (older links); the API resolves either.
+    const ticker = decodeURIComponent(location.pathname.split("/")[2] ?? "").toLowerCase();
     const fail = (msg: string) => { $("tk-missing-msg").textContent = msg; root.dataset.state = "missing"; };
-    if (!/^[a-z][a-z0-9]{1,15}$/.test(ticker)) fail("Add a ticker to the URL, like /t/soak.");
+    if (!SITE_ID_RE.test(ticker)) fail("Add a token to the URL, like /t/quack-chaos.");
     else
       fetch(`${API_URL}/api/site/${ticker}`)
         .then(async (r) => {
           const j = await r.json().catch(() => ({}));
           if (!r.ok) return fail(r.status === 404 ? `$${ticker.toUpperCase()} hasn't been yeeted yet.` : j.error ?? `HTTP ${r.status}`);
           const s = j.siteConfig;
+          if (s.slug && s.slug !== ticker) history.replaceState(null, "", `/t/${s.slug}${location.search}${location.hash}`);
           const c = s.theme.colors;
           const st = root.style;
           st.setProperty("--tk-primary", c.primary); st.setProperty("--tk-secondary", c.secondary);

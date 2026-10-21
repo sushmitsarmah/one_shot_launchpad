@@ -5,6 +5,8 @@ import {
   BatchLaunchRequest,
   GenerateRequest,
   LaunchRequest,
+  SITE_ID_RE,
+  Ticker,
   type BatchLaunchResponse,
   type LaunchedToken,
   SessionRequest,
@@ -161,9 +163,14 @@ app.post("/api/launch", requireSession, async (c) => {
     return c.json({ error: "launch failed on-chain; your balance was refunded", txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}` }, 502);
   }
 
-  const siteConfig = buildSiteConfig(ownerWallet, idea, tokenId, { txHash, icon });
-  await putSite(siteConfig);
-  const res: LaunchResponse = { tokenId, txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}`, siteConfig };
+  const siteConfig = await putSite(buildSiteConfig(ownerWallet, idea, tokenId, { txHash, icon }));
+  const res: LaunchResponse = {
+    tokenId,
+    txHash,
+    explorerUrl: `${config.explorerBase}/txns/${txHash}`,
+    siteConfig,
+    siteUrl: siteUrl(siteConfig.slug ?? idea.ticker),
+  };
   return c.json(res);
 });
 
@@ -208,10 +215,10 @@ app.post("/api/launch/batch", requireSession, async (c) => {
   const out: BatchLaunchResponse["results"] = [];
   for (const [i, r] of results.entries()) {
     if (r.tokenId) {
-      await putSite(buildSiteConfig(ownerWallet, ideas[i], r.tokenId, { txHash, icon: icons[i] }));
-      out.push({ ticker: r.ticker, ok: true, tokenId: r.tokenId, siteUrl: siteUrl(r.ticker), error: null });
+      const site = await putSite(buildSiteConfig(ownerWallet, ideas[i], r.tokenId, { txHash, icon: icons[i] }));
+      out.push({ ticker: r.ticker, ok: true, tokenId: r.tokenId, slug: site.slug ?? null, siteUrl: siteUrl(site.slug ?? r.ticker), error: null });
     } else {
-      out.push({ ticker: r.ticker, ok: false, tokenId: null, siteUrl: null, error: "launch failed on-chain; that item was refunded" });
+      out.push({ ticker: r.ticker, ok: false, tokenId: null, slug: null, siteUrl: null, error: "launch failed on-chain; that item was refunded" });
     }
   }
   const res: BatchLaunchResponse = { txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}`, results: out };
@@ -230,11 +237,13 @@ function parseCompact(site: string | null): { tagline?: string; description?: st
 }
 
 /** SiteConfig for /t/<ticker>: KV first, then rebuilt from the on-chain factory record. */
-app.get("/api/site/:ticker", async (c) => {
-  const ticker = c.req.param("ticker").toLowerCase();
-  if (!/^[a-z][a-z0-9]{1,15}$/.test(ticker)) return c.json({ error: "invalid ticker" }, 400);
-  const kv = await getSite(ticker);
-  if (kv) return c.json({ source: "kv", siteConfig: kv, siteUrl: siteUrl(ticker) });
+app.get("/api/site/:id", async (c) => {
+  const id = c.req.param("id").toLowerCase();
+  if (!SITE_ID_RE.test(id)) return c.json({ error: "invalid ticker or slug" }, 400);
+  const kv = await getSite(id);
+  if (kv) return c.json({ source: "kv", siteConfig: kv, siteUrl: siteUrl(kv.slug ?? id) });
+  const ticker = id;
+  if (!Ticker.safeParse(ticker).success) return c.json({ error: "no such token" }, 404);
   const rec = await getTokenRecord(ticker);
   if (!rec) return c.json({ error: "no such token" }, 404);
   const s = parseCompact(rec.site);
@@ -267,7 +276,8 @@ const toLaunched = async (r: TokenRecord): Promise<LaunchedToken> => {
     name: kv?.branding.name ?? null,
     tagline: kv?.branding.tagline ?? s.tagline ?? null,
     colors: kv?.theme.colors ?? s.colors ?? null,
-    siteUrl: siteUrl(r.ticker),
+    slug: kv?.slug ?? null,
+    siteUrl: siteUrl(kv?.slug ?? r.ticker),
     explorerUrl: `${config.explorerBase}/address/${r.token_id}`,
   };
 };

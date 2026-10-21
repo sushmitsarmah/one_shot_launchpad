@@ -3,7 +3,7 @@
  * Worker; an in-memory map for the local Bun server and tests. A compact copy also lives on-chain
  * in the factory registry (`site` field), used if KV has no entry.
  */
-import { SiteConfig, type LaunchIdea } from "@osl/schema";
+import { SiteConfig, slugify, type LaunchIdea } from "@osl/schema";
 import { config } from "./config";
 
 export interface KVLike {
@@ -32,19 +32,47 @@ export function setSiteStore(kv: KVLike | undefined) {
 export const siteStoreKind = () => (usingKv ? "kv" : "memory");
 
 const key = (ticker: string) => `site:${ticker}`;
+const slugKey = (slug: string) => `slug:${slug}`;
 
-export async function putSite(site: SiteConfig) {
-  await store.put(key(site.branding.ticker.toLowerCase()), JSON.stringify(site));
+/**
+ * Picks a free slug for `ticker` from `name`: the slugified name, then -2, -3, ... when the slug is
+ * already mapped to a different ticker. Falls back to the ticker if the name has no usable chars.
+ */
+export async function claimSlug(name: string, ticker: string, kv: KVLike = store): Promise<string> {
+  const base = slugify(name) || ticker;
+  for (let n = 1; n < 1000; n++) {
+    const suffix = n === 1 ? "" : `-${n}`;
+    const cand = `${base.slice(0, 40 - suffix.length).replace(/-+$/, "")}${suffix}`;
+    const owner = await kv.get(slugKey(cand));
+    if (!owner || owner === ticker) return cand;
+  }
+  return ticker;
 }
 
-export async function getSite(ticker: string): Promise<SiteConfig | null> {
-  const raw = await store.get(key(ticker));
+/** Writes `site:<ticker>` (full config) and `slug:<slug>` -> ticker. Assigns a slug if missing. */
+export async function putSite(site: SiteConfig): Promise<SiteConfig> {
+  const ticker = site.branding.ticker.toLowerCase();
+  const slug = site.slug ?? (await claimSlug(site.branding.name, ticker));
+  const full = { ...site, slug };
+  await store.put(slugKey(slug), ticker);
+  await store.put(key(ticker), JSON.stringify(full));
+  return full;
+}
+
+/** Looks up a site by ticker or slug. */
+export async function getSite(id: string): Promise<SiteConfig | null> {
+  let raw = await store.get(key(id));
+  if (!raw) {
+    const ticker = await store.get(slugKey(id));
+    if (ticker) raw = await store.get(key(ticker));
+  }
   if (!raw) return null;
   const parsed = SiteConfig.safeParse(JSON.parse(raw));
   return parsed.success ? parsed.data : null;
 }
 
-export const siteUrl = (ticker: string) => `${config.siteBase.replace(/\/$/, "")}/t/${ticker}`;
+/** Public site URL; pass the slug when known, else the ticker. */
+export const siteUrl = (id: string) => `${config.siteBase.replace(/\/$/, "")}/t/${id}`;
 
 export function buildSiteConfig(
   owner: string,

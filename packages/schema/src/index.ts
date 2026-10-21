@@ -56,6 +56,8 @@ export const SiteConfig = z.object({
   }),
   /** NEP-148 icon (data URI) used for the token. */
   iconDataUri: z.string().optional(),
+  /** URL slug from the token name (`/t/<slug>`); unique per token. */
+  slug: z.string().optional(),
 });
 export type SiteConfig = z.infer<typeof SiteConfig>;
 
@@ -93,6 +95,7 @@ export const LaunchResponse = z.object({
   txHash: z.string(),
   explorerUrl: z.string().url(),
   siteConfig: SiteConfig,
+  siteUrl: z.string().url().optional(),
 });
 export type LaunchResponse = z.infer<typeof LaunchResponse>;
 
@@ -106,6 +109,7 @@ export const BatchLaunchItem = z.object({
   ticker: z.string(),
   ok: z.boolean(),
   tokenId: z.string().nullable(),
+  slug: z.string().nullable().optional(),
   siteUrl: z.string().url().nullable(),
   error: z.string().nullable(),
 });
@@ -121,6 +125,7 @@ export type BatchLaunchResponse = z.infer<typeof BatchLaunchResponse>;
 /** A launched token as listed in "My launches" / the token page. */
 export const LaunchedToken = z.object({
   ticker: z.string(),
+  slug: z.string().nullable(),
   tokenId: z.string(),
   ownerId: z.string(),
   createdAt: z.number(), // unix ms
@@ -191,3 +196,17 @@ export function parseSignInMessage(message: string): { accountId: string; issued
   const issuedAt = Date.parse(m[2]);
   return Number.isFinite(issuedAt) ? { accountId: m[1], issuedAt } : null;
 }
+
+/** URL slug from a token name: lowercase, ASCII-folded, non-alphanumerics -> '-', max 40 chars. */
+export function slugify(name: string, max = 40): string {
+  const s = name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return s.slice(0, max).replace(/-+$/g, "");
+}
+
+/** Path ids accepted by /t/<id> and /api/site/<id>: a ticker or a slug. */
+export const SITE_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;

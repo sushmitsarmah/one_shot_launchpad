@@ -219,7 +219,7 @@ export default function Studio() {
           <h2>4. Yeet it</h2>
           <p className="muted small">
             Creates {chosen.length === 1 ? "a NEP-141 token" : `${chosen.length} NEP-141 tokens in one transaction`} owned by you, paid from your vault balance
-            (~1.82 NEAR each; a failed item is refunded). Each gets a site at <code>/t/&lt;ticker&gt;</code>.
+            (~1.82 NEAR each; a failed item is refunded). Each gets a site at <code>/t/&lt;token-name&gt;</code>.
           </p>
           <button
             disabled={busy !== null || chosen.length === 0}
@@ -243,7 +243,7 @@ export default function Studio() {
                     {r.ok ? "✅" : "❌"} <strong>${r.ticker.toUpperCase()}</strong>{" "}
                     {r.ok ? (
                       <>
-                        <code>{r.tokenId}</code> · <a href={`/t/${r.ticker}`}>open site →</a>
+                        <code>{r.tokenId}</code> · <a href={`/t/${r.slug ?? r.ticker}`}>open site →</a>
                       </>
                     ) : (
                       <span className="muted">{r.error}</span>
@@ -273,7 +273,7 @@ export default function Studio() {
             {launches.map((l) => (
               <li key={l.ticker}>
                 <span className="dot" style={{ background: l.colors?.primary ?? "var(--pink)" }} />
-                <a href={`/t/${l.ticker}`}>
+                <a href={`/t/${l.slug ?? l.ticker}`}>
                   <strong>{l.name ?? l.ticker.toUpperCase()}</strong> <span className="muted">${l.ticker.toUpperCase()}</span>
                 </a>
                 <span className="muted small">{new Date(l.createdAt).toLocaleDateString()}</span>
