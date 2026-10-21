@@ -1,0 +1,132 @@
+/* Wallet-selector modal, restyled to the cream/ink sticker brand.
+   `html` prefix raises specificity above @near-wallet-selector/modal-ui/styles.css regardless of load order
+   (including its dark-theme and prefers-color-scheme: dark variants). */
+html #near-wallet-selector-modal,
+html #near-wallet-selector-modal .dark-theme {
+  --backdrop-bg: rgba(27, 20, 51, 0.55);
+  --heading-color: var(--ink);
+  --text-color: var(--ink-soft);
+  --sidebar-border-color: var(--ink);
+  --selected-wallet-bg: var(--lime);
+  --selected-wallet-bg-hover: var(--lime);
+  --wallet-option-border-color: var(--ink);
+  --wallet-option-bg-hover: var(--yellow);
+  --wallet-option-outline-color: var(--grape);
+  --content-bg: var(--cream);
+  --change-path-bg: var(--white);
+  --home-button-bg: var(--white);
+  --confirm-button-bg: var(--pink);
+  --confirm-button-bg-hover: var(--pink);
+  --error: #c81e4b;
+  --close-button-bg-color: var(--white);
+  --close-button-fill-icon-color: var(--ink);
+  --spinner-color: var(--pink);
+  --bottom-section: var(--cream);
+  --mobile-text: var(--ink);
+  --connected-green: var(--lime);
+  --get-wallet-option-bg-color: var(--white);
+  --get-wallet-option-bg-color-hover: var(--yellow);
+  --get-wallet-option-border-color: var(--ink);
+  --get-wallet-outline-color: var(--grape);
+  --get-wallet-option-box-shadow: 3px 3px 0 var(--ink);
+  --secondary-button-bg-color: var(--white);
+  --secondary-button-border-color: var(--ink);
+  --secondary-button-text-color: var(--ink);
+  --what-wallet-icon-color: var(--ink);
+  --deprecated-icon-bg-color: var(--cream-2);
+  --deprecated-icon-bg-color-selected: var(--lime);
+  --option-wallet-bg-color: var(--white);
+  --option-single-wallet-bg-color: var(--white);
+  --wallet-selector-content-bg: var(--cream);
+  --wallet-selector-heading-color: var(--ink);
+  --wallet-selector-text-color: var(--ink-soft);
+  --wallet-selector-backdrop-bg: rgba(27, 20, 51, 0.55);
+  --wallet-selector-home-button-bg: var(--white);
+  --wallet-selector-selected-wallet-bg: var(--lime);
+  --wallet-selector-wallet-option-bg-hover: var(--yellow);
+  --wallet-selector-close-button-fill-icon-color: var(--ink);
+  --wallet-selector-connected-green: var(--lime);
+  --wallet-selector-mobile-bottom-section: var(--cream);
+  font-family: var(--body);
+  color: var(--ink);
+}
+
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal-overlay { backdrop-filter: blur(3px); }
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal-background {
+  border: 3px solid var(--ink);
+  border-radius: 28px;
+  box-shadow: 10px 10px 0 var(--ink);
+  background-image: radial-gradient(rgba(27, 20, 51, 0.06) 1.2px, transparent 1.2px);
+  background-size: 22px 22px;
+}
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .modal-left { border-right: 3px solid var(--ink); }
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .modal-left .modal-left-title { background: var(--cream); }
+html #near-wallet-selector-modal h2,
+html #near-wallet-selector-modal h3,
+html #near-wallet-selector-modal .nws-modal-title,
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .modal-left .modal-left-title h2 {
+  font-family: var(--display);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+
+/* wallet list items -> mini stickers */
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .wallet-options-wrapper .options-list { gap: 12px; padding: 4px 6px 8px 2px; }
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .wallet-options-wrapper .options-list .single-wallet.sidebar {
+  background: var(--white);
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 3px 3px 0 var(--ink);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .wallet-options-wrapper .options-list .single-wallet.sidebar:hover {
+  background: var(--yellow);
+  transform: translate(-2px, -2px) rotate(-1deg);
+  box-shadow: 5px 5px 0 var(--ink);
+}
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .wallet-options-wrapper .options-list .single-wallet.sidebar.selected-wallet {
+  background: var(--lime);
+}
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .wallet-options-wrapper .options-list .single-wallet.sidebar.selected-wallet .content .title,
+html #near-wallet-selector-modal .single-wallet .content .name { color: var(--ink); font-weight: 700; }
+html #near-wallet-selector-modal .single-wallet .icon img { border-radius: 10px; }
+
+/* buttons inside the modal */
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal button.middleButton,
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .action-buttons button,
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .modal-right .info .button,
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .button-wrapper button {
+  font-family: var(--display);
+  font-weight: 400;
+  color: var(--ink);
+  background: var(--lime);
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+html #near-wallet-selector-modal .nws-modal-wrapper .close-button {
+  background: var(--white);
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+html #near-wallet-selector-modal .nws-modal-wrapper .close-button svg { fill: var(--ink); }
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal button.middleButton,
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .action-buttons button,
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .modal-right .info .button,
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .button-wrapper button {
+  padding: 0.65rem 1.3rem;
+  font-size: 0.95rem;
+  line-height: 1.1;
+  margin-top: 0.4rem;
+}
+html #near-wallet-selector-modal .single-wallet .content .title { font-weight: 700; color: var(--ink); font-size: 1rem; }
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .modal-right .nws-modal-body .content,
+html #near-wallet-selector-modal .nws-modal-wrapper .nws-modal .modal-right .nws-modal-body p { color: var(--ink-soft); font-family: var(--body); }
+html #near-wallet-selector-modal .info p.button {
+  font-family: var(--display) !important; font-weight: 400; color: var(--ink) !important; background: var(--lime) !important;
+  border: 3px solid var(--ink) !important; border-radius: 999px; box-shadow: 3px 3px 0 var(--ink);
+  padding: 0.6rem 1.3rem !important; font-size: 0.95rem; line-height: 1.1; cursor: pointer; margin-top: 0.5rem;
+}
+html #near-wallet-selector-modal .single-wallet .content .title { font-weight: 700 !important; color: var(--ink) !important; }

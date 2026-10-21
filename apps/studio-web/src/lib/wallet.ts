@@ -31,6 +31,8 @@ export async function depositCredits(yocto: string) {
 }
 
 export async function signOut() {
+  const { clearSession } = await import("./auth");
+  clearSession();
   const { selector } = await initWallet();
   const wallet = await selector.wallet();
   await wallet.signOut();

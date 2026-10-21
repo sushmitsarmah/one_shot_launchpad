@@ -54,3 +54,6 @@ details summary { cursor: pointer; font-weight: 700; }
 @media (max-width: 560px) {
   .card { padding: 1.1rem; transform: none !important; }
 }
+
+.badge { display: inline-block; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border: 2px solid var(--ink); border-radius: 999px; padding: 0.05rem 0.5rem; background: var(--cream-2); vertical-align: middle; }
+.badge-ok { background: var(--lime); }

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { formatNear, parseNear, type LaunchIdea, type LaunchResponse } from "@osl/schema";
+import { formatNear, parseNear, type LaunchIdea, type LaunchResponse, type SessionResponse } from "@osl/schema";
 import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, signOut } from "../lib/wallet";
 import { getVaultBalance } from "../lib/near";
-import { generate, launch } from "../lib/api";
+import { generate, launch, UnauthorizedError } from "../lib/api";
+import { clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { VAULT_CONTRACT } from "../lib/config";
 
-type Busy = null | "deposit" | "generate" | "launch";
+type Busy = null | "deposit" | "generate" | "launch" | "verify";
 
 export default function Studio() {
   const [account, setAccount] = useState<string | null>(null);
@@ -17,6 +18,34 @@ export default function Studio() {
   const [result, setResult] = useState<LaunchResponse | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [session, setSession] = useState<SessionResponse | null>(null);
+
+  // Finish a redirect-style signMessage (MyNearWallet returning to /app/ with the signature in the URL).
+  useEffect(() => {
+    completeRedirectSignIn()
+      .then((s) => s && setSession(s))
+      .catch((e) => setError((e as Error).message));
+  }, []);
+
+  // Session belongs to one account: drop it when the wallet account changes.
+  useEffect(() => {
+    if (!account) return setSession(null);
+    const s = getSession(account);
+    if (!s) {
+      try {
+        const stored = JSON.parse(localStorage.getItem("osl.session") ?? "null");
+        if (stored && stored.accountId !== account) clearSession();
+      } catch {}
+    }
+    setSession(s);
+  }, [account]);
+
+  /** Returns a bearer token, prompting the wallet to sign if needed (null = redirected away). */
+  const authToken = async (acc: string) => {
+    const s = getSession(acc) ?? (await ensureSession(acc));
+    setSession(s);
+    return s?.token ?? null;
+  };
 
   useEffect(() => {
     let sub: { unsubscribe(): void } | undefined;
@@ -47,6 +76,7 @@ export default function Studio() {
     try {
       await fn();
     } catch (e) {
+      if (e instanceof UnauthorizedError) setSession(null);
       setError((e as Error).message ?? String(e));
     } finally {
       setBusy(null);
@@ -72,9 +102,24 @@ export default function Studio() {
         <div className="row between">
           <div>
             <div className="muted small">Connected</div>
-            <strong>{account}</strong>
+            <strong>{account}</strong>{" "}
+            {session ? (
+              <span className="badge badge-ok" title={`Session valid until ${new Date(session.expiresAt).toLocaleString()}`}>✓ verified</span>
+            ) : (
+              <span className="badge">not verified</span>
+            )}
           </div>
-          <button className="ghost" onClick={() => signOut()}>Sign out</button>
+          <div className="row">
+            {!session && (
+              <button
+                disabled={busy !== null}
+                onClick={() => run("verify", async () => void (await authToken(account)))}
+              >
+                {busy === "verify" ? "Sign in wallet…" : "Verify wallet"}
+              </button>
+            )}
+            <button className="ghost" onClick={() => signOut().then(() => setSession(null))}>Sign out</button>
+          </div>
         </div>
       </section>
 
@@ -104,6 +149,11 @@ export default function Studio() {
 
       <section className="card">
         <h2>3. Generate an idea</h2>
+        {!session && (
+          <p className="muted small">
+            First time this session? Your wallet will ask you to sign a short message (free, no transaction) so the API knows it's really you.
+          </p>
+        )}
         <textarea
           rows={3}
           placeholder="e.g. a wholesome meme coin for sleepy penguins"
@@ -114,7 +164,9 @@ export default function Studio() {
           disabled={busy !== null || prompt.trim().length < 3}
           onClick={() =>
             run("generate", async () => {
-              const r = await generate(prompt.trim(), account);
+              const token = await authToken(account);
+              if (!token) return;
+              const r = await generate(prompt.trim(), account, token);
               setIdea(r.idea);
               setResult(null);
               await refresh();
@@ -137,7 +189,9 @@ export default function Studio() {
             disabled={busy !== null}
             onClick={() =>
               run("launch", async () => {
-                setResult(await launch(account, idea));
+                const token = await authToken(account);
+                if (!token) return;
+                setResult(await launch(account, idea, token));
                 await refresh();
               })
             }
