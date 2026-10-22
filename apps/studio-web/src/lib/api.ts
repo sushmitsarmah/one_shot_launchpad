@@ -56,8 +56,8 @@ async function post<T>(path: string, body: unknown, token: string): Promise<T> {
   return j as T;
 }
 
-export const generate = (prompt: string, ownerWallet: string, token: string, count = 1, avoid: string[] = []) =>
-  post<GenerateResponse>("/api/generate", { prompt, ownerWallet, count, ...(avoid.length ? { avoid } : {}) }, token);
+export const generate = (prompt: string, ownerWallet: string, token: string, count = 1, avoid: string[] = [], seq?: number) =>
+  post<GenerateResponse>("/api/generate", { prompt, ownerWallet, count, ...(avoid.length ? { avoid } : {}), ...(seq !== undefined ? { seq } : {}) }, token);
 
 /** Credits charged per generated idea (yoctoNEAR), from /api/health. */
 export const aiComputeCost = () => get<{ aiComputeCost?: string }>("/api/health").then((h) => h.aiComputeCost ?? "10000000000000000000000");

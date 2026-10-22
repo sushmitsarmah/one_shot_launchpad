@@ -106,14 +106,25 @@ export async function generateIdea(prompt: string): Promise<LaunchIdea> {
   return parseIdeaText(text);
 }
 
+/** Short per-idea creative angles so parallel calls on the same prompt don't converge on one name. */
+export const ANGLES = [
+  "a pun", "a mascot character", "retro arcade", "a mock-serious corporation", "a fake sports team", "space",
+  "medieval", "a cooking show", "noir detective", "a boy band", "a weather report", "a cult classic movie",
+  "a nature documentary", "a heist", "a self-help guru", "a superhero", "a startup pitch", "a soap opera",
+  "a road trip", "an old-school RPG", "a fashion label", "a news anchor", "a rock opera", "a kids' cartoon",
+];
+
 /** Generates `count` (1-MAX_BATCH) ideas in parallel and makes their tickers unique.
- *  `avoid` = names/tickers already used earlier in a chunked run (only the last few are sent, to keep tokens low). */
-export async function generateIdeas(prompt: string, count = 1, avoid: string[] = []): Promise<LaunchIdea[]> {
+ *  `avoid` = names/tickers already used earlier in a chunked run (only the last few are sent, to keep tokens low).
+ *  `seq` = the run position of this chunk's first idea; each idea gets its own angle from ANGLES. */
+export async function generateIdeas(prompt: string, count = 1, avoid: string[] = [], seq?: number): Promise<LaunchIdea[]> {
   const n = Math.max(1, Math.min(MAX_BATCH, Math.floor(count)));
   const recent = avoid.slice(-AVOID_MAX).map((s) => s.slice(0, 24));
   const tail = recent.length ? ` Don't reuse: ${recent.join(", ")}.` : "";
   const variants = Array.from({ length: n }, (_, i) =>
-    n === 1 && !tail ? prompt : `${prompt}\n\n(Idea ${i + 1} of ${n}: clearly different from the others, own name, ticker and palette.${tail})`,
+    n === 1 && !tail && seq === undefined
+      ? prompt
+      : `${prompt}\n\n(Idea ${i + 1} of ${n}: clearly different from the others, own name, ticker and palette.${seq !== undefined ? ` Angle: ${ANGLES[(seq + i) % ANGLES.length]}.` : ""}${tail})`,
   );
   const ideas = await Promise.all(variants.map((p) => generateIdea(p)));
   const seen = new Set<string>(avoid.map((s) => s.toLowerCase()));

@@ -74,6 +74,8 @@ export const GenerateRequest = z.object({
   count: z.number().int().min(1).max(MAX_BATCH).optional(),
   /** Names/tickers already used earlier in this run, so the LLM avoids them (short; kept small for tokens). */
   avoid: z.array(z.string().max(40)).max(MAX_RUN * 2).optional(),
+  /** Position of this chunk's first idea in the run (0-based); gives each idea its own creative angle. */
+  seq: z.number().int().min(0).max(MAX_RUN * 3).optional(),
   /** Optional: the account comes from the session; if sent it must match it. */
   ownerWallet: NearAccountId.optional(),
 });

@@ -437,11 +437,15 @@ export default function Studio() {
       // A second, smaller round tops up ideas dropped as duplicates (charged like any chunk).
       for (let round = 0; round < 2 && got < n && !genStop.current && !authErr; round++) {
         const before = got;
+        let seq = round * MAX_RUN; // each chunk/idea gets its own angle; a top-up round shifts to fresh ones
         await pool(
-          chunkSizes(n - got).map((size) => async () => {
+          chunkSizes(n - got).map((size) => {
+            const at = seq;
+            seq += size;
+            return async () => {
             if (genStop.current || authErr) throw Object.assign(new Error("stopped"), { noRetry: true });
             try {
-              const r = await generate(prompt.trim(), account!, token, size, used.slice(-24));
+              const r = await generate(prompt.trim(), account!, token, size, used.slice(-24), at);
               return r.ideas ?? [r.idea];
             } catch (e) {
               if (isAuthErr(e)) {
@@ -450,6 +454,7 @@ export default function Studio() {
               }
               throw e;
             }
+            };
           }),
           {
             concurrency: GEN_CONCURRENCY,

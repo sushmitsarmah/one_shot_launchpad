@@ -220,7 +220,7 @@ app.post("/api/generate", requireSession, requireAllowed, async (c) => {
     return c.json({ error: `insufficient vault balance: need ${formatNear(cost)} NEAR for ${count} idea(s), have ${formatNear(bal)}` }, 402);
   }
 
-  const ideas = await generateIdeas(prompt, count, body.data.avoid ?? []);
+  const ideas = await generateIdeas(prompt, count, body.data.avoid ?? [], body.data.seq);
   // Charge only after valid ideas were produced (one charge for the whole set).
   const txHash = cost > 0n ? await deductAiCompute(ownerWallet, cost) : null;
   const res: GenerateResponse = { idea: ideas[0], ideas, charged: cost.toString(), txHash };

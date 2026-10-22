@@ -142,6 +142,14 @@ describe("batch + sites (mock mode)", () => {
     expect(before - after).toBe(12n * 10n ** 22n);
   });
 
+  test("generate takes a run position (seq) for per-idea angles; out-of-range seq is rejected", async () => {
+    const t = await session("jade.testnet");
+    const r = await post("/api/generate", { prompt: "sleepy owls", count: 2, seq: 95 }, t);
+    expect(r.status).toBe(200);
+    expect((await r.json()).ideas.length).toBe(2);
+    expect((await post("/api/generate", { prompt: "sleepy owls", count: 1, seq: 10_000 }, t)).status).toBe(400);
+  });
+
   test("health reports the per-call chunk and the run size", async () => {
     const h = await (await app.request("/api/health")).json();
     expect(h.maxBatch).toBe(5);
