@@ -56,6 +56,12 @@ out.tokensTable = await waitFor(`!!document.querySelector('.tokens-table tbody t
 out.tokensRows = await evalJs(`document.querySelectorAll('.tokens-table tbody tr').length`);
 out.totals = await evalJs(`document.querySelector('.tokens-dash .admin-stats')?.textContent`);
 out.hash = await evalJs(`location.hash`);
+// Delete dialog (opened and cancelled; nothing is deleted)
+await evalJs(`[...document.querySelectorAll('.tokens-table tbody tr')].find(r => /pool ↗/.test(r.textContent)).querySelector('button.danger').click(); true`);
+await waitFor(`!!document.querySelector('.danger-dialog') && !/Checking your Rhea/.test(document.querySelector('.danger-dialog').textContent)`, 20000);
+out.deleteDialog = await evalJs(`(() => { const d = document.querySelector('.danger-dialog'); return { stays: /stays on the NEAR blockchain/.test(d.textContent), offline: /go(es)? offline/.test(d.textContent), liquidity: (d.querySelector('label.pick')?.textContent ?? d.querySelector('.del-facts li:last-child')?.textContent ?? '').trim().slice(0, 90), confirm: [...d.querySelectorAll('button')].map(b => b.textContent).join(' | ') }; })()`);
+await evalJs(`[...document.querySelectorAll('.danger-dialog button')].find(b => b.textContent === 'Cancel').click(); true`);
+out.showDeletedToggle = await evalJs(`!!document.querySelector('.tokens-dash input[type=checkbox]') && /Show deleted/.test(document.querySelector('.tokens-dash').textContent)`);
 
 // ---- review/edit: preload a draft of 8 ideas (no generation spend), edit inline, check validation + persistence ----
 const mk = (i: number) => ({ name: `Draft Idea ${i}`, ticker: `drafttk${i}`, tagline: "a draft tagline", description: "A draft description long enough.", colors: { primary: "#ff3d8b", secondary: "#2b2bff", accent: "#ffd23f", background: "#fff6e9", text: "#111111" } });

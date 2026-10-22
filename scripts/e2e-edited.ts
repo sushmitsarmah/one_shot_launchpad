@@ -15,7 +15,7 @@ const kp = KeyPair.fromString(k.private_key as KeyPairString);
 const provider = new JsonRpcProvider({ url: "https://test.rpc.fastnear.com" });
 const fmt = (y: bigint) => (Number(y) / 1e24).toFixed(5);
 const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
-const view = (c: string, m: string, a: object) => provider.callFunction({ contractId: c, method: m, args: a }) as Promise<any>;
+const view = (c: string, m: string, a: Record<string, unknown>) => provider.callFunction({ contractId: c, method: m, args: a }) as Promise<any>;
 const credit = async () => BigInt(await view(VAULT, "get_balance", { account_id: who }));
 const wallet = async (a: string) => BigInt((await provider.viewAccount({ accountId: a })).amount);
 
