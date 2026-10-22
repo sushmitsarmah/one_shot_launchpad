@@ -64,7 +64,7 @@
         "LOCKED": "1",
         "ALLOWED_ACCOUNTS": "",
         // Add your own mainnet wallet here before deploying.
-        "ADMIN_ACCOUNTS": "yeetpad.near",
+        "ADMIN_ACCOUNTS": "sillypuma1184.near",
         "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad-mainnet.sushmitsarmah.workers.dev,http://localhost:4321"
       }
     }
