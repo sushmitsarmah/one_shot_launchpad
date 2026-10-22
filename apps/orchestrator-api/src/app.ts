@@ -31,6 +31,8 @@ import {
   NearlyFinalizeRequest,
   NearlyPrepareRequest,
   QuoteRequest,
+  TokensActionRequest,
+  type TokensActionResult,
   type NearlyFinalizeResponse,
   type NearlyLaunchTx,
   type NearlyPrepareResponse,
@@ -53,7 +55,7 @@ import {
   referenceJson,
   sha256Base64,
 } from "./justhoot";
-import { buildSiteConfig, claimSlug, compactSite, findSite, getSite, getViews, kvStore, putSite, saveSite, siteStoreKind, siteUrl } from "./sites";
+import { buildSiteConfig, claimSlug, compactSite, findSite, getSite, getTakedown, getViews, kvStore, putSite, restoreTakedown, saveSite, siteStoreKind, siteUrl, takeDown } from "./sites";
 import {
   WAITLIST_MAX_BODY,
   addToWaitlist,
@@ -655,6 +657,55 @@ async function addVenueIndex(owner: string, venue: "nearly" | "justhoot", ticker
   await kv.put(key, JSON.stringify(idx.slice(0, 500)));
 }
 
+// ---------- take down / restore a token's site (creator, or an admin for moderation) ----------
+/** Who may act on `ticker`: its recorded creator (factory registry, else the site's ownerWallet) or an admin. */
+async function tokenAccess(ticker: string, account: string): Promise<{ ok: true; admin: boolean } | { ok: false; status: 403 | 404; note: string }> {
+  const rec = await getTokenRecord(ticker).catch(() => null);
+  const creator = rec?.owner_id ?? (await findSite(ticker))?.site.ownerWallet ?? null;
+  const admin = isAdmin(account, config);
+  if (!creator) return admin ? { ok: true, admin } : { ok: false, status: 404, note: "no such token" };
+  if (creator === account) return { ok: true, admin: false };
+  if (admin) return { ok: true, admin: true };
+  return { ok: false, status: 403, note: "only the token's creator can do this" };
+}
+
+async function tokensAction(c: import("hono").Context<Env>, kind: "delete" | "restore") {
+  const body = TokensActionRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
+  const account = c.var.account;
+  const results: TokensActionResult[] = [];
+  let forbidden = 0;
+  for (const ticker of [...new Set(body.data.tokens)]) {
+    const a = await tokenAccess(ticker, account);
+    if (!a.ok) {
+      if (a.status === 403) forbidden++;
+      results.push({ ticker, ok: false, note: a.note });
+      continue;
+    }
+    const td = await getTakedown(ticker);
+    if (kind === "delete") {
+      if (td) results.push({ ticker, ok: true, note: "already taken down" });
+      else {
+        await takeDown(ticker, { at: Date.now(), by: account, ...(a.admin ? { byAdmin: true } : {}) });
+        results.push({ ticker, ok: true });
+      }
+    } else if (!td) results.push({ ticker, ok: true, note: "not taken down" });
+    else if (td.byAdmin && !isAdmin(account, config)) {
+      forbidden++;
+      results.push({ ticker, ok: false, note: "taken down by a moderator; only an admin can restore it" });
+    } else {
+      await restoreTakedown(ticker);
+      results.push({ ticker, ok: true });
+    }
+  }
+  const status = results.some((r) => r.ok) ? 200 : forbidden ? 403 : 404;
+  return c.json({ results, ...(status !== 200 ? { error: results[0]?.note ?? "nothing changed" } : {}) }, status);
+}
+
+/** Soft-deletes Yeetpad sites (deleted:<ticker> + site.takenDown); the on-chain token is untouched. */
+app.post("/api/tokens/delete", requireSession, requireAllowed, (c) => tokensAction(c, "delete"));
+app.post("/api/tokens/restore", requireSession, requireAllowed, (c) => tokensAction(c, "restore"));
+
 // ---------- whitelist (waitlist) ----------
 /**
  * Join the waitlist. Public, idempotent, soft rate-limited per IP. Stored as `waitlist:<account>` in the
@@ -731,6 +782,8 @@ app.get("/api/site/:id", async (c) => {
   const id = c.req.param("id").toLowerCase();
   if (!SITE_ID_RE.test(id)) return c.json({ error: "invalid ticker or slug" }, 400);
   const found = await findSite(id);
+  const td = await getTakedown(found?.ticker ?? id);
+  if (td) return c.json({ error: "This token page was taken down by its creator", code: "taken_down", takenDownAt: td.at }, 410);
   if (found) {
     const kv = found.site;
     return c.json({ source: "kv", siteConfig: kv, siteUrl: siteUrl(kv.slug ?? id), views: await getViews(found.ticker) });
@@ -779,6 +832,11 @@ const getListing = async (ticker: string): Promise<Listing | null> => {
   return raw ? (JSON.parse(raw) as Listing) : null;
 };
 
+const withTakedown = async (l: LaunchedToken): Promise<LaunchedToken> => {
+  const td = await getTakedown(l.ticker);
+  return td ? { ...l, deletedAt: td.at, ...(td.byAdmin ? { deletedByAdmin: true } : {}) } : l;
+};
+
 const toLaunched = async (r: TokenRecord): Promise<LaunchedToken> => {
   const kv = await getSite(r.ticker);
   const s = parseCompact(r.site);
@@ -811,6 +869,7 @@ app.get("/api/launches/:account", async (c) => {
   const limit = Math.min(50, Number(c.req.query("limit") ?? 20) || 20);
   const recs = await getTokensByOwner(account.data, from, limit);
   const launches = await Promise.all(recs.map(toLaunched));
+  const includeDeleted = c.req.query("includeDeleted") === "1";
   // Nearly tokens live outside our factory; they come from the KV index (first page only).
   if (from === 0) {
     const idx = [
@@ -840,5 +899,7 @@ app.get("/api/launches/:account", async (c) => {
     }
     launches.sort((a, b) => b.createdAt - a.createdAt);
   }
-  return c.json({ account: account.data, launches });
+  // Taken-down tokens are hidden unless asked for; `scanned` = factory records read (for client paging).
+  const marked = await Promise.all(launches.map(withTakedown));
+  return c.json({ account: account.data, launches: includeDeleted ? marked : marked.filter((l) => !l.deletedAt), scanned: recs.length });
 });

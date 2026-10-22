@@ -38,6 +38,8 @@ interface Site {
   theme: { colors: { primary: string; background: string } };
   iconDataUri?: string;
   analytics?: { gaId?: string };
+  /** Soft delete by the creator (or a moderator): the page answers 410 and no view is counted. */
+  takenDown?: { at: number; by: string; byAdmin?: boolean };
 }
 
 const DEFAULT_ORIGIN = "https://yeetpad.fun";
@@ -85,6 +87,28 @@ async function resolve(kv: KV, id: string): Promise<{ site: Site; ticker: string
   }
 }
 
+/** Plain 410 for a taken-down token page (no token copy, no analytics, not indexed). */
+export function goneResponse(byAdmin = false): Response {
+  const msg = byAdmin ? "This token page was taken down by a moderator." : "This token page was taken down by its creator.";
+  const html =
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<meta name="robots" content="noindex"><title>Page taken down</title>` +
+    `<style>body{font:16px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#fafafa;color:#222}main{max-width:32rem;padding:2rem;text-align:center}p{color:#555}</style>` +
+    `</head><body><main><h1>Gone</h1><p>${msg}</p><p>The token itself still exists on the NEAR blockchain; this page no longer represents it.</p><p><a href="/">yeetpad.fun</a></p></main></body></html>`;
+  return new Response(html, { status: 410, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60", "x-robots-tag": "noindex" } });
+}
+
+async function takedownOf(kv: KV, ticker: string): Promise<{ byAdmin?: boolean } | null> {
+  const raw = await kv.get(`deleted:${ticker}`).catch(() => null);
+  if (!raw) return null;
+  try {
+    const t = JSON.parse(raw);
+    return t && typeof t.at === "number" ? t : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Sets an attribute on matched elements; HTMLRewriter escapes attribute values itself. */
 const attr = (name: string, value: string) => ({
   element(el: El) {
@@ -102,11 +126,15 @@ export default {
     const found = ID_RE.test(id) && env.SITES ? await resolve(env.SITES, id).catch(() => null) : null;
 
     if (!found) {
+      // Chain-only tokens have no site record; the takedown lives in deleted:<ticker>.
+      const td = env.SITES && TICKER_RE.test(id) ? await takedownOf(env.SITES, id) : null;
+      if (td) return goneResponse(td.byAdmin);
       return new HTMLRewriter()
         .on("head", { element: (el) => void el.append('<meta name="robots" content="noindex">', { html: true }) })
         .transform(page);
     }
     const { site, ticker } = found;
+    if (site.takenDown) return goneResponse(site.takenDown.byAdmin);
     const slug = site.slug ?? ticker;
     if (id !== slug) return Response.redirect(`${url.origin}/t/${slug}${url.search}`, 301);
 

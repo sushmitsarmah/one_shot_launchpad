@@ -58,6 +58,8 @@ export const SiteConfig = z.object({
   iconDataUri: z.string().optional(),
   /** URL slug from the token name (`/t/<slug>`); unique per token. */
   slug: z.string().optional(),
+  /** Soft delete ("taken down"): the page shows a 410; cleared by POST /api/tokens/restore. */
+  takenDown: z.object({ at: z.number(), by: z.string(), byAdmin: z.boolean().optional() }).optional(),
   /** Creator-owned settings (set via PUT /api/site/:id/settings by the owner only). */
   analytics: z.object({ gaId: z.string().regex(/^G-[A-Z0-9]{4,12}$/).optional() }).optional(),
 });
@@ -179,6 +181,9 @@ export const LaunchedToken = z.object({
   venueUrl: z.string().url().nullable().optional(),
   /** Launch transaction (from the stored site config, when known). */
   txHash: z.string().nullable().optional(),
+  /** Set when the creator (or an admin) took the token's site down (only listed with ?includeDeleted=1). */
+  deletedAt: z.number().nullable().optional(),
+  deletedByAdmin: z.boolean().optional(),
 });
 export type LaunchedToken = z.infer<typeof LaunchedToken>;
 
@@ -383,3 +388,13 @@ export type JusthootFinalizeResponse = NearlyFinalizeResponse;
 export { tokenIconDataUri, tokenIconSvg } from "./icon";
 export * from "./run";
 export * from "./validate";
+
+// ---------- take down / restore a token's Yeetpad site (soft delete; the token stays on chain) ----------
+export const TOKENS_DELETE_MAX = 50;
+export const TokensActionRequest = z.object({ tokens: z.array(Ticker).min(1).max(TOKENS_DELETE_MAX) });
+export type TokensActionRequest = z.infer<typeof TokensActionRequest>;
+export interface TokensActionResult {
+  ticker: string;
+  ok: boolean;
+  note?: string;
+}

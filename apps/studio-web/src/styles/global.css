@@ -206,3 +206,13 @@ details summary { cursor: pointer; font-weight: 700; }
 .ie-color { display: inline-flex !important; grid-auto-flow: column; align-items: center; gap: 0.3rem; font-weight: 400 !important; }
 .app-main .ie-color input[type="color"] { width: 2rem; height: 1.6rem; padding: 0; border: 2px solid var(--ink); border-radius: 6px; background: none; }
 .ie-actions { gap: 0.5rem; flex-wrap: wrap; }
+
+/* ---------- delete (take down) ---------- */
+.tokens-table tr.is-deleted td { opacity: 0.55; }
+.tokens-table tr.is-deleted td.c-actions, .tokens-table tr.is-deleted td.c-check { opacity: 1; }
+.badge-del { background: #ffe3ea; }
+.danger-dialog { position: fixed; inset: 0; z-index: 50; background: rgba(27, 20, 51, 0.55); display: grid; place-items: center; padding: 1rem; }
+.danger-card { width: min(720px, 100%); max-height: 90vh; overflow: auto; border-color: #c81e4b !important; transform: none !important; }
+.del-facts { display: grid; gap: 0.6rem; padding-left: 1.1rem; margin: 0 0 1rem; }
+.del-facts p { margin: 0.35rem 0 0; }
+.app-main .danger-card button.danger { background: #c81e4b; color: #fff; }

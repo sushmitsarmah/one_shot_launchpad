@@ -189,3 +189,40 @@ export function compactSite(idea: LaunchIdea): string {
   const s = JSON.stringify({ v: 1, tagline: idea.tagline, description: idea.description, colors: idea.colors });
   return s.length <= 2048 ? s : JSON.stringify({ v: 1, tagline: idea.tagline, colors: idea.colors });
 }
+
+// ---------- soft delete ("take down") ----------
+export interface Takedown {
+  at: number;
+  by: string;
+  byAdmin?: boolean;
+}
+const delKey = (ticker: string) => `deleted:${ticker}`;
+
+/** The takedown record for `ticker`, or null. `deleted:<ticker>` is the source of truth (works for chain-only tokens too). */
+export async function getTakedown(ticker: string, kv: KVLike = store): Promise<Takedown | null> {
+  const raw = await kv.get(delKey(ticker));
+  if (!raw) return null;
+  try {
+    const t = JSON.parse(raw) as Takedown | null;
+    return t && typeof t.at === "number" ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Marks a token's site taken down (keeps all data; mirrored into the site record for the page Worker). */
+export async function takeDown(ticker: string, t: Takedown, kv: KVLike = store) {
+  await kv.put(delKey(ticker), JSON.stringify(t));
+  const found = await findSite(ticker);
+  if (found) await saveSite(found.ticker, { ...found.site, takenDown: t });
+}
+
+export async function restoreTakedown(ticker: string, kv: KVLike = store) {
+  if (kv.delete) await kv.delete(delKey(ticker));
+  else await kv.put(delKey(ticker), "null");
+  const found = await findSite(ticker);
+  if (found?.site.takenDown) {
+    const { takenDown: _t, ...site } = found.site;
+    await saveSite(found.ticker, site);
+  }
+}

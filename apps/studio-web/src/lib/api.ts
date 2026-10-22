@@ -16,7 +16,7 @@ import type {
   RheaOptions,
   SiteConfig,
 } from "@osl/schema";
-import { MAX_BATCH, chunk, pool } from "@osl/schema";
+import { MAX_BATCH, TOKENS_DELETE_MAX, chunk, pool, type TokensActionResult } from "@osl/schema";
 import { API_URL } from "./config";
 import { NotWhitelistedError, clearSession, isNotWhitelisted } from "./auth";
 
@@ -146,19 +146,38 @@ async function get<T>(path: string): Promise<T> {
   return j as T;
 }
 
-/** All of an account's launches: pages through the factory registry (50 per page), newest first. */
-export async function myLaunches(account: string): Promise<{ account: string; launches: LaunchedToken[] }> {
+/** All of an account's launches: pages through the factory registry (50 per page), newest first.
+ *  `includeDeleted` also returns taken-down tokens (with deletedAt) for the My tokens "Show deleted" view. */
+export async function myLaunches(account: string, includeDeleted = false): Promise<{ account: string; launches: LaunchedToken[] }> {
   const PAGE = 50;
   const all: LaunchedToken[] = [];
   for (let from = 0, page = 0; page < 40; page++, from += PAGE) {
-    const r = await get<{ account: string; launches: LaunchedToken[] }>(`/api/launches/${encodeURIComponent(account)}?from=${from}&limit=${PAGE}`);
+    const r = await get<{ account: string; launches: LaunchedToken[]; scanned?: number }>(
+      `/api/launches/${encodeURIComponent(account)}?from=${from}&limit=${PAGE}${includeDeleted ? "&includeDeleted=1" : ""}`,
+    );
     all.push(...r.launches);
-    // Nearly/JustHoot entries come from a KV index on the first page only; count factory tokens for paging.
-    if (r.launches.filter((l) => l.venue !== "nearly" && l.venue !== "justhoot").length < PAGE) break;
+    // `scanned` = factory records read on this page (Nearly/JustHoot entries come from a KV index on page 0).
+    const scanned = r.scanned ?? r.launches.filter((l) => l.venue !== "nearly" && l.venue !== "justhoot").length;
+    if (scanned < PAGE) break;
   }
   const seen = new Set<string>();
   const launches = all.filter((l) => !seen.has(l.tokenId) && seen.add(l.tokenId)).sort((a, b) => b.createdAt - a.createdAt);
   return { account, launches };
+}
+
+/** Take down / restore token sites (creator or admin), TOKENS_DELETE_MAX per request. */
+export async function tokensAction(kind: "delete" | "restore", tickers: string[], token: string): Promise<TokensActionResult[]> {
+  const out: TokensActionResult[] = [];
+  for (const part of chunk(tickers, TOKENS_DELETE_MAX)) {
+    try {
+      out.push(...(await post<{ results: TokensActionResult[] }>(`/api/tokens/${kind}`, { tokens: part }, token)).results);
+    } catch (e) {
+      const r = (e as ApiError).body?.results as TokensActionResult[] | undefined;
+      if (r?.length) out.push(...r);
+      else throw e;
+    }
+  }
+  return out;
 }
 
 export const fetchSite = (ticker: string) =>

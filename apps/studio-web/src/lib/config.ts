@@ -12,3 +12,5 @@ export const RPC_URL = import.meta.env.PUBLIC_NEAR_RPC_URL ?? net("https://test.
 export const EXPLORER_BASE = (import.meta.env.PUBLIC_EXPLORER_BASE ?? net("https://testnet.nearblocks.io", "https://nearblocks.io")).replace(/\/$/, "");
 /** Short label used in copy: "testnet" / "mainnet". */
 export const NET_LABEL = NETWORK;
+/** Rhea DCL v2 (positions are withdrawn from here when a token is taken down). */
+export const DCL_CONTRACT = import.meta.env.PUBLIC_DCL_CONTRACT ?? net("dclv2.ref-dev.testnet", "dclv2.ref-labs.near");

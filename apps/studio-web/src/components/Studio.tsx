@@ -24,17 +24,18 @@ import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, friendlyWalletError, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
 import { viewCall } from "../lib/near";
 import { getVaultBalance } from "../lib/near";
-import { aiComputeCost, ApiError, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
+import { removablePositions, removeLiquidityCall, type DclPosition } from "../lib/dcl";
+import { aiComputeCost, ApiError, tokensAction, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
 import { applyResults, isDone, loadDraft, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveRun, type LaunchRun, type RunItem } from "../lib/run";
 import MyTokens from "./MyTokens";
 import { webpIcons } from "../lib/icon";
-import { EXPLORER_BASE, NETWORK } from "../lib/config";
+import { DCL_CONTRACT, EXPLORER_BASE, NETWORK } from "../lib/config";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { WaitlistForm } from "./WaitlistForm";
 import Admin from "./Admin";
 import { VAULT_CONTRACT } from "../lib/config";
 
-type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist";
+type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist" | "delete";
 type Tab = "studio" | "tokens" | "admin";
 const COUNT_PRESETS = [1, 5, 10, 25, 50, 100];
 /** Ideas list switches from full cards to light rows above this many. */
@@ -79,6 +80,7 @@ export default function Studio() {
   const [q, setQ] = useState<QuoteResponse | null>(null);
   const [qErr, setQErr] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [nearlyOff, setNearlyOff] = useState<string | null>(null);
   const [justhootOff, setJusthootOff] = useState<string | null>("mainnet only, enabled at mainnet launch");
   useEffect(() => {
@@ -181,7 +183,8 @@ export default function Studio() {
   const loadLaunches = useCallback(async () => {
     if (!account) return setLaunches(null);
     try {
-      setLaunches((await myLaunches(account)).launches);
+      // Includes taken-down tokens (deletedAt) for My tokens → "Show deleted"; everything else hides them.
+      setLaunches((await myLaunches(account, true)).launches);
     } catch {
       setLaunches([]);
     }
@@ -296,6 +299,57 @@ export default function Studio() {
       .catch((e) => setError((e as Error).message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.token]);
+
+  /** Creator's DCL positions for these tokens (one list_liquidities view). */
+  const loadPositions = async (tokenIds: string[]) => {
+    const all = ((await viewCall<DclPosition[]>(DCL_CONTRACT, "list_liquidities", { account_id: account })) ?? []) as DclPosition[];
+    return new Map(tokenIds.map((t) => [t, removablePositions(all, t, account!)] as const));
+  };
+
+  /** Delete = take the sites down (API) first, then optionally pull Rhea liquidity (wallet-signed, 10 per approval). */
+  const deleteTokens = (tickers: string[], positions: { ticker: string; p: DclPosition }[]) =>
+    run("delete", async () => {
+      setNotice(null);
+      const token = await authToken(account!);
+      if (!token) return;
+      setProgress(`Taking down ${tickers.length} page${tickers.length > 1 ? "s" : ""}…`);
+      try {
+        const res = await tokensAction("delete", tickers, token);
+        const ok = res.filter((r) => r.ok).length;
+        const bad = res.filter((r) => !r.ok);
+        let msg = `Took down ${ok} page${ok === 1 ? "" : "s"}.`;
+        await loadLaunches();
+        if (positions.length) {
+          const calls = positions.map(({ ticker, p }) => removeLiquidityCall(DCL_CONTRACT, p, ticker));
+          try {
+            const signed = await signCallsInChunks(calls, 10, {
+              persist: false,
+              onPrompt: (k, of) => setProgress(`Pulling liquidity: approval ${k} of ${of} in your wallet (${Math.min(10, calls.length - (k - 1) * 10)} position${calls.length > 1 ? "s" : ""})…`),
+            });
+            msg += ` Pulled ${signed.length}/${calls.length} Rhea position${calls.length > 1 ? "s" : ""} back to your wallet.`;
+          } catch (e) {
+            msg += ` Liquidity not withdrawn: ${friendlyWalletError(e).message}. You can pull it from Rhea directly.`;
+          }
+        }
+        setNotice(msg);
+        if (bad.length) setError(`Not taken down: ${bad.map((b) => `${b.ticker.toUpperCase()} (${b.note})`).join(", ")}`);
+      } finally {
+        setProgress(null);
+        await refresh();
+        await loadLaunches();
+      }
+    });
+  const restoreTokens = (tickers: string[]) =>
+    run("delete", async () => {
+      setNotice(null);
+      const token = await authToken(account!);
+      if (!token) return;
+      const res = await tokensAction("restore", tickers, token);
+      const bad = res.filter((r) => !r.ok);
+      setNotice(`Restored ${res.length - bad.length} page${res.length - bad.length === 1 ? "" : "s"}.`);
+      if (bad.length) setError(`Not restored: ${bad.map((b) => `${b.ticker.toUpperCase()} (${b.note})`).join(", ")}`);
+      await loadLaunches();
+    });
 
   const isAuthErr = (e: unknown) => e instanceof UnauthorizedError || e instanceof NotWhitelistedError;
   const runProgress = () => {
@@ -544,6 +598,7 @@ export default function Studio() {
   }, []);
 
   const isLocked = locked !== false;
+  const liveLaunches = launches?.filter((l) => !l.deletedAt) ?? null;
   const lrunCounts = lrun ? runCounts(lrun) : null;
   const walletPrompts = Math.max(1, Math.ceil(chosen.length / 10));
   const runStatus = new Map((lrun?.items ?? []).map((it) => [it.idea.ticker, it.status] as const));
@@ -666,7 +721,7 @@ export default function Studio() {
   const tabs = (
     <nav className="studio-tabs" role="tablist" aria-label="Studio sections">
       <button role="tab" aria-selected={tab === "studio"} onClick={() => openTab("studio")}>🏭 Studio</button>
-      <button role="tab" aria-selected={tab === "tokens"} onClick={() => openTab("tokens")}>🪙 My tokens{launches?.length ? ` (${launches.length})` : ""}</button>
+      <button role="tab" aria-selected={tab === "tokens"} onClick={() => openTab("tokens")}>🪙 My tokens{liveLaunches?.length ? ` (${liveLaunches.length})` : ""}</button>
       {isAdmin && <button role="tab" aria-selected={tab === "admin"} onClick={() => openTab("admin")}>🛡️ Admin</button>}
     </nav>
   );
@@ -679,9 +734,13 @@ export default function Studio() {
           account={session?.accountId ?? account}
           launches={launches}
           busy={busy !== null}
-          progress={busy === "relist" ? progress : null}
+          progress={busy === "relist" || busy === "delete" ? progress : null}
           onReload={loadLaunches}
           onListOnRhea={(ids) => relist(ids)}
+          onDelete={deleteTokens}
+          onRestore={restoreTokens}
+          loadPositions={loadPositions}
+          notice={notice}
         />
         {error && <p className="error">{error}</p>}
       </>
@@ -756,17 +815,17 @@ export default function Studio() {
           <h2>My launches</h2>
           <button className="link" onClick={loadLaunches}>refresh</button>
         </div>
-        {launches === null ? (
+        {liveLaunches === null ? (
           <p className="muted">Loading…</p>
-        ) : launches.length === 0 ? (
+        ) : liveLaunches.length === 0 ? (
           <p className="muted">Nothing yeeted yet. Your tokens will show up here.</p>
         ) : (
           <>
           <p className="small">
-            <button className="link" onClick={() => openTab("tokens")}>Open the My tokens dashboard ({launches.length}) →</button>
+            <button className="link" onClick={() => openTab("tokens")}>Open the My tokens dashboard ({liveLaunches.length}) →</button>
           </p>
           <ul className="my-launches">
-            {launches.slice(0, 8).map((l) => (
+            {liveLaunches.slice(0, 8).map((l) => (
               <li key={l.tokenId}>
                 <span className="dot" style={{ background: l.colors?.primary ?? "var(--pink)" }} />
                 <div className="ml-body">
@@ -813,9 +872,9 @@ export default function Studio() {
               </li>
             ))}
           </ul>
-          {launches.length > 8 && (
+          {liveLaunches.length > 8 && (
             <p className="small muted">
-              + {launches.length - 8} more in <button className="link" onClick={() => openTab("tokens")}>My tokens</button>
+              + {liveLaunches.length - 8} more in <button className="link" onClick={() => openTab("tokens")}>My tokens</button>
             </p>
           )}
           </>

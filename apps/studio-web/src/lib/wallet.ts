@@ -70,6 +70,8 @@ export interface SignOpts {
   onPrompt?: (k: number, of: number) => void;
   /** Called after each prompt with that prompt's signed txs (finalize/persist them right away). */
   onSigned?: (part: { ticker: string; txHash: string }[], doneCalls: number) => void | Promise<void>;
+  /** Remember the tickers for a redirect wallet's return (Nearly/JustHoot finalize). Off for other calls. */
+  persist?: boolean;
 }
 export async function signCallsInChunks(calls: PreparedCall[], chunk: number, opts: SignOpts | ((done: number) => void) = {}, venue: WalletVenue = "nearly") {
   const o: SignOpts = typeof opts === "function" ? { onSigned: (_p, n) => opts(n) } : opts;
@@ -81,7 +83,7 @@ export async function signCallsInChunks(calls: PreparedCall[], chunk: number, op
   for (let i = 0, k = 1; i < calls.length; i += size, k++) {
     const part = calls.slice(i, i + size);
     o.onPrompt?.(k, prompts);
-    localStorage.setItem(NEARLY_PENDING, JSON.stringify({ venue, tickers: part.map((c) => c.ticker) }));
+    if (o.persist !== false) localStorage.setItem(NEARLY_PENDING, JSON.stringify({ venue, tickers: part.map((c) => c.ticker) }));
     const res = await wallet.signAndSendTransactions({
       transactions: part.map((c) => ({
         receiverId: c.receiverId,
@@ -92,7 +94,7 @@ export async function signCallsInChunks(calls: PreparedCall[], chunk: number, op
     const signed: { ticker: string; txHash: string }[] = [];
     outcomes.forEach((x, j) => x?.transaction?.hash && signed.push({ ticker: part[j].ticker, txHash: x.transaction.hash }));
     out.push(...signed);
-    localStorage.removeItem(NEARLY_PENDING);
+    if (o.persist !== false) localStorage.removeItem(NEARLY_PENDING);
     await o.onSigned?.(signed, Math.min(i + size, calls.length));
   }
   return out;

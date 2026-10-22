@@ -10,7 +10,8 @@ beforeAll(async () => {
   process.env.NEAR_MOCK = "1";
   process.env.SESSION_SECRET = "test-secret";
   process.env.VAULT_CONTRACT = RECIPIENT;
-  process.env.LOCKED = "0"; // these tests exercise the open app; the gate has its own tests (gate.test.ts)
+  process.env.LOCKED = "0";
+  process.env.ADMIN_ACCOUNTS = "boss.testnet"; // these tests exercise the open app; the gate has its own tests (gate.test.ts)
   ({ app } = await import("./app"));
   (await import("./config")).configureFromEnv({});
 });
@@ -165,6 +166,61 @@ describe("batch + sites (mock mode)", () => {
     for (const bad of [{ ...idea("edbad"), name: "   " }, { ...idea("edbad"), ticker: "EdBad" }, { ...idea("edbad"), description: "x".repeat(601) }, { ...idea("9bad") }]) {
       expect((await post("/api/launch/batch", { ideas: [bad] }, t)).status).toBe(400);
     }
+  });
+
+  test("take down / restore: creator-only, admin can moderate, 410, hidden from launches", async () => {
+    const owner = await session("lena.testnet");
+    const other = await session("mo.testnet");
+    const boss = await session("boss.testnet");
+    const r = await post("/api/launch/batch", { ideas: [idea("deltk"), idea("deltwo")] }, owner);
+    expect(r.status).toBe(200);
+    const slug = (await r.json()).results[0].slug;
+    const launches = async (q = "") => (await (await app.request(`/api/launches/lena.testnet${q}`)).json()).launches as { ticker: string; deletedAt?: number }[];
+    expect((await launches()).map((l) => l.ticker)).toContain("deltk");
+
+    // non-owner: 403, nothing changes
+    const bad = await post("/api/tokens/delete", { tokens: ["deltk"] }, other);
+    expect(bad.status).toBe(403);
+    expect((await app.request(`/api/site/${slug}`)).status).toBe(200);
+    expect((await post("/api/tokens/delete", { tokens: ["deltk"] }, null)).status).toBe(401);
+    expect((await post("/api/tokens/delete", { tokens: ["Bad!"] }, owner)).status).toBe(400);
+    expect((await post("/api/tokens/delete", { tokens: Array.from({ length: 51 }, (_, i) => `tk${i}x`) }, owner)).status).toBe(400);
+
+    // owner: soft delete
+    const d = await post("/api/tokens/delete", { tokens: ["deltk"] }, owner);
+    expect(d.status).toBe(200);
+    expect((await d.json()).results[0]).toEqual({ ticker: "deltk", ok: true });
+    const gone = await app.request(`/api/site/${slug}`);
+    expect(gone.status).toBe(410);
+    expect((await gone.json()).code).toBe("taken_down");
+    expect((await app.request("/api/site/deltk")).status).toBe(410);
+    expect((await launches()).map((l) => l.ticker)).not.toContain("deltk");
+    const all = await launches("?includeDeleted=1");
+    expect(all.find((l) => l.ticker === "deltk")?.deletedAt).toBeGreaterThan(0);
+    expect(all.find((l) => l.ticker === "deltwo")?.deletedAt ?? null).toBeNull();
+    // data kept
+    const { findSite } = await import("./sites");
+    expect((await findSite("deltk"))?.site.takenDown?.by).toBe("lena.testnet");
+    expect((await findSite("deltk"))?.site.branding.name).toBeDefined();
+
+    // restore: non-owner 403, owner ok
+    expect((await post("/api/tokens/restore", { tokens: ["deltk"] }, other)).status).toBe(403);
+    expect((await post("/api/tokens/restore", { tokens: ["deltk"] }, owner)).status).toBe(200);
+    expect((await app.request(`/api/site/${slug}`)).status).toBe(200);
+    expect((await findSite("deltk"))?.site.takenDown).toBeUndefined();
+    expect((await launches()).map((l) => l.ticker)).toContain("deltk");
+
+    // admin can take down anyone's token; then the creator can't restore it, the admin can
+    expect((await post("/api/tokens/delete", { tokens: ["deltwo"] }, boss)).status).toBe(200);
+    expect((await app.request("/api/site/deltwo")).status).toBe(410);
+    const cr = await post("/api/tokens/restore", { tokens: ["deltwo"] }, owner);
+    expect(cr.status).toBe(403);
+    expect((await cr.json()).results[0].note).toContain("moderator");
+    expect((await post("/api/tokens/restore", { tokens: ["deltwo"] }, boss)).status).toBe(200);
+    expect((await app.request("/api/site/deltwo")).status).toBe(200);
+
+    // unknown ticker: 404 for a creator
+    expect((await post("/api/tokens/delete", { tokens: ["nosuchtk"] }, owner)).status).toBe(404);
   });
 
   test("health reports the per-call chunk and the run size", async () => {
