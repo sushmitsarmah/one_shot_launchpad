@@ -394,11 +394,13 @@ function DeleteDialog({
 
   const quoteAll = async (rows: Row[]) => {
     setQuotes(null);
-    const qs = await Promise.all(rows.map(async (r) => [r.p.lpt_id, await quotePosition(viewCall, DCL_CONTRACT, r.p)] as const));
-    setQuotes(new Map(qs));
     const ids = [...new Set(rows.flatMap((r) => Object.values(poolTokens(r.p))))].filter((t) => !decimals.has(t));
-    const ds = await Promise.all(ids.map(async (t) => [t, await viewCall<{ decimals: number }>(t, "ft_metadata").then((m) => m.decimals).catch(() => -1)] as const));
+    const [qs, ds] = await Promise.all([
+      Promise.all(rows.map(async (r) => [r.p.lpt_id, await quotePosition(viewCall, DCL_CONTRACT, r.p)] as const)),
+      Promise.all(ids.map(async (t) => [t, await viewCall<{ decimals: number }>(t, "ft_metadata").then((m) => m.decimals).catch(() => -1)] as const)),
+    ]);
     setDecimals((d) => new Map([...d, ...ds]));
+    setQuotes(new Map(qs));
   };
   useEffect(() => {
     loadPositions(tokens.map((t) => t.tokenId))
