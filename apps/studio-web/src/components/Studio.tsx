@@ -363,7 +363,7 @@ export default function Studio() {
       </section>
 
       <section className="card s-topup">
-        <h2>2. Top up NEAR AI credits</h2>
+        <h2>2. Top up credits</h2>
         <p>
           Vault balance: <strong>{balance === null ? "…" : `${formatNear(balance)} NEAR`}</strong>{" "}
           <button className="link" onClick={refresh}>refresh</button>
