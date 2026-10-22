@@ -39,11 +39,40 @@ import {
   type NearlyLaunchTx,
   type NearlyPrepareResponse,
   type QuoteResponse,
+  LlmKeyRequest,
+  LlmModelsRequest,
+  type LlmProviderInfo,
+  type PlatformKeyInfo,
 } from "@osl/schema";
 import { buildListParams, computePoints, listingCost, poolIdFor, rheaPoolUrl } from "./rhea";
 import { config } from "./config";
 import { DEPOSIT_ADDRESS_RE, oneClickQuote, oneClickStatus, oneClickTokens, planQuote, shapeQuote } from "./intents";
-import { generateIdeas } from "./llm";
+import { LLMCallError, envTarget, generateIdeas, type LLMTarget } from "./llm";
+import {
+  KEY_RATE_LIMIT,
+  KeyError,
+  MODELS_RATE_LIMIT,
+  PLATFORM,
+  PROVIDERS,
+  PROVIDER_IDS,
+  cleanKey,
+  cleanModel,
+  defaultModel,
+  deleteRecord,
+  keyStorageConfigured,
+  last4,
+  listModels,
+  openKey,
+  providerForBaseUrl,
+  readRecord,
+  sealKey,
+  summarize,
+  takeKeyRate,
+  validateKey,
+  writeRecord,
+  type KeyRecord,
+  type ProviderId,
+} from "./llmkeys";
 import { tokenIconDataUri } from "./icon";
 import {
   accountExists,
@@ -115,7 +144,7 @@ app.use(
   cors({
     // Resolved per request so Worker env bindings (applied on first request) are honoured.
     origin: (origin) => (config.corsOrigins.includes("*") ? "*" : config.corsOrigins.includes(origin) ? origin : null),
-    allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     maxAge: 600,
   }),
@@ -123,6 +152,12 @@ app.use(
 
 app.onError((err, c) => {
   if (err instanceof AuthError) return c.json({ error: err.message, ...(err.code ? { code: err.code } : {}) }, err.status as 401 | 403);
+  // Our own messages, never provider text or key material.
+  if (err instanceof KeyError) return c.json({ error: err.message, ...(err.code ? { code: err.code } : {}) }, err.status);
+  if (err instanceof LLMCallError) {
+    console.error(JSON.stringify({ llm_error: { source: err.source, status: err.status } }));
+    return c.json({ error: err.message, code: "llm_failed" }, 502);
+  }
   console.error(err);
   const msg = err instanceof Error ? err.message : String(err);
   const status = /insufficient balance/i.test(msg) ? 402 : 500;
@@ -151,6 +186,7 @@ app.get("/api/health", (c) =>
     siteStore: siteStoreKind(),
     siteBase: config.siteBase,
     locked: config.locked,
+    byok: keyStorageConfigured(),
   }),
 );
 
@@ -219,18 +255,57 @@ app.post("/api/generate", requireSession, requireAllowed, async (c) => {
   const count = body.data.count ?? 1;
   const ownerWallet = ownerFor(c, body.data.ownerWallet);
   const cost = BigInt(config.aiComputeCostYocto) * BigInt(count);
+  const avoid = body.data.avoid ?? [];
+
+  // The caller's own key: their provider bills them, so no AI fee. Never falls back to the platform key on its own.
+  const own = body.data.usePlatformKey ? null : await readRecord(kvStore(), ownerWallet);
+  if (own) {
+    const label = PROVIDERS[own.provider].label;
+    const fallback = { code: "user_key_invalid", provider: own.provider, fallbackCost: cost.toString() };
+    if (!own.valid) {
+      return c.json({ error: `Your ${label} key isn't working${own.lastError ? `: ${own.lastError}` : ""}. Replace it in AI key settings, or use the platform key (${formatNear(cost)} NEAR). Nothing was charged.`, ...fallback }, 424);
+    }
+    const apiKey = await openKey(ownerWallet, own).catch(() => null);
+    if (!apiKey) return c.json({ error: `Your saved ${label} key can't be read; replace it in AI key settings. Nothing was charged.`, ...fallback }, 424);
+    const target: LLMTarget = { baseUrl: PROVIDERS[own.provider].baseUrl, apiKey, model: own.model, source: "user", provider: own.provider };
+    let ideas;
+    try {
+      ideas = await generateIdeas(prompt, count, avoid, body.data.seq, target);
+    } catch (e) {
+      if (!(e instanceof LLMCallError)) throw e;
+      if (e.status === 401 || e.status === 403 || e.status === 402 || e.status === 429) {
+        // Remember auth failures so the next request explains at once; quota errors only leave a note.
+        const bad = e.status === 401 || e.status === 403;
+        await writeRecord(kvStore(), ownerWallet, { ...own, valid: bad ? false : own.valid, lastError: e.message, validatedAt: bad ? Date.now() : own.validatedAt });
+      }
+      return c.json({ error: `${e.message} Nothing was charged.`, ...fallback, code: "user_key_failed", status: e.status }, 424);
+    }
+    const res: GenerateResponse = { idea: ideas[0], ideas, charged: "0", txHash: null, keySource: "user", provider: own.provider, model: own.model };
+    return c.json(res);
+  }
 
   const bal = await getVaultBalance(ownerWallet);
   if (bal < cost) {
     return c.json({ error: `insufficient vault balance: need ${formatNear(cost)} NEAR for ${count} idea(s), have ${formatNear(bal)}` }, 402);
   }
 
-  const ideas = await generateIdeas(prompt, count, body.data.avoid ?? [], body.data.seq);
+  const target = config.llmMock ? undefined : await platformTarget();
+  const ideas = await generateIdeas(prompt, count, avoid, body.data.seq, target);
   // Charge only after valid ideas were produced (one charge for the whole set).
   const txHash = cost > 0n ? await deductAiCompute(ownerWallet, cost) : null;
-  const res: GenerateResponse = { idea: ideas[0], ideas, charged: cost.toString(), txHash };
+  const res: GenerateResponse = { idea: ideas[0], ideas, charged: cost.toString(), txHash, keySource: target?.source ?? "env", provider: target?.provider ?? null, model: target?.model ?? config.nearAiModel };
   return c.json(res);
 });
+
+/** Platform LLM: the admin-set stored key when present and valid, else the NEARAI_* env fallback. */
+async function platformTarget(): Promise<LLMTarget> {
+  const rec = await readRecord(kvStore(), PLATFORM).catch(() => null);
+  if (rec?.valid) {
+    const apiKey = await openKey(PLATFORM, rec).catch(() => null);
+    if (apiKey) return { baseUrl: PROVIDERS[rec.provider].baseUrl, apiKey, model: rec.model, source: "platform", provider: rec.provider };
+  }
+  return envTarget();
+}
 
 app.post("/api/launch", requireSession, requireAllowed, async (c) => {
   const body = LaunchRequest.safeParse(await c.req.json().catch(() => null));
@@ -791,6 +866,167 @@ app.post("/api/admin/remove", async (c) => {
   if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
   return c.json({ results: await removeAccounts(kvStore(), body.data.accounts, config) });
 });
+
+// ---------- AI keys: bring your own key (user) + platform default key (admin) ----------
+// Keys are write-only: these routes return provider, model, last 4 characters, dates and validity, never the key.
+
+const providerInfo = (): LlmProviderInfo[] =>
+  PROVIDER_IDS.map((id) => ({ id, label: PROVIDERS[id].label, baseUrl: PROVIDERS[id].baseUrl, keysUrl: PROVIDERS[id].keysUrl, defaultModels: [...PROVIDERS[id].preferredModels] }));
+
+app.get("/api/llm/providers", (c) => c.json({ providers: providerInfo(), aiComputeCost: config.aiComputeCostYocto, enabled: keyStorageConfigured() }));
+
+async function parseKeyBody<T>(c: import("hono").Context<Env>, schema: { safeParse(v: unknown): { success: true; data: T } | { success: false; error: { issues: { message: string; path: PropertyKey[] }[] } } }): Promise<T> {
+  const text = await c.req.text().catch(() => "");
+  if (text.length > 8192) throw new KeyError("request too large", 400);
+  let json: unknown = null;
+  try {
+    json = JSON.parse(text);
+  } catch {}
+  if (json && typeof json === "object" && ("baseUrl" in json || "baseURL" in json || "url" in json)) {
+    throw new KeyError(`custom base URLs aren't allowed; pick one of: ${PROVIDER_IDS.join(", ")}`, 400, "url_not_allowed");
+  }
+  const r = schema.safeParse(json);
+  if (!r.success) {
+    const i = r.error.issues[0];
+    // Never echo input values (they may contain the key).
+    const msg = i?.path?.[0] === "provider" ? `provider must be one of: ${PROVIDER_IDS.join(", ")}` : `invalid ${String(i?.path?.[0] ?? "request")}`;
+    throw new KeyError(msg, 400);
+  }
+  return r.data;
+}
+
+async function rate(account: string, bucket: "save" | "models") {
+  const limit = bucket === "save" ? KEY_RATE_LIMIT : MODELS_RATE_LIMIT;
+  if (!(await takeKeyRate(kvStore(), account, bucket, limit))) {
+    throw new KeyError(`too many ${bucket === "save" ? "key saves/tests" : "model list requests"}; limit is ${limit} per hour`, 429, "rate_limited");
+  }
+}
+
+const requireKeyStorage = () => {
+  if (!keyStorageConfigured()) throw new KeyError("saving AI keys isn't enabled on this server yet", 503, "key_storage_unconfigured");
+};
+
+/** The key to use for a models/save request: the pasted one, else the stored one for the same provider. */
+async function keyFor(owner: string, provider: ProviderId, pasted: string | undefined, existing: KeyRecord | null): Promise<string> {
+  if (pasted !== undefined && pasted.trim() !== "") return cleanKey(pasted);
+  if (existing && existing.provider === provider) return openKey(owner, existing);
+  throw new KeyError(`paste your ${PROVIDERS[provider].label} API key first`, 400, "key_required");
+}
+
+async function modelsFor(owner: string, c: import("hono").Context<Env>, actor: string) {
+  requireKeyStorage();
+  const body = await parseKeyBody(c, LlmModelsRequest);
+  await rate(actor, "models");
+  const existing = await readRecord(kvStore(), owner);
+  const apiKey = await keyFor(owner, body.provider, body.apiKey, existing);
+  const models = await listModels(body.provider, apiKey);
+  return c.json({ provider: body.provider, models, defaultModel: defaultModel(body.provider, models) });
+}
+
+/** Validate (cheap authenticated call) and store encrypted. Nothing is stored if validation fails. */
+async function saveKeyFor(owner: string, c: import("hono").Context<Env>, actor: string) {
+  requireKeyStorage();
+  const body = await parseKeyBody(c, LlmKeyRequest);
+  await rate(actor, "save");
+  const kv = kvStore();
+  const existing = await readRecord(kv, owner);
+  const replacing = body.apiKey !== undefined && body.apiKey.trim() !== "";
+  const apiKey = await keyFor(owner, body.provider, body.apiKey, existing);
+  const models = await listModels(body.provider, apiKey);
+  const model = body.model ? cleanModel(body.model) : defaultModel(body.provider, models);
+  if (!model) throw new KeyError(`${PROVIDERS[body.provider].label} returned no models`, 502);
+  if (models.length && !models.some((m) => m.id === model)) throw new KeyError(`${PROVIDERS[body.provider].label} doesn't offer model "${model}"`, 400, "unknown_model");
+  const v = await validateKey(body.provider, apiKey, model);
+  if (!v.ok) throw new KeyError(`${v.error} The key was not saved.`, 400, "key_invalid");
+  const now = Date.now();
+  const sealed = await sealKey(owner, body.provider, apiKey);
+  const rec: KeyRecord = {
+    v: 1,
+    ...sealed,
+    provider: body.provider,
+    model,
+    createdAt: replacing || !existing ? now : existing.createdAt,
+    updatedAt: now,
+    valid: true,
+    validatedAt: now,
+    lastError: null,
+    by: actor,
+  };
+  await writeRecord(kv, owner, rec);
+  return c.json({ ok: true, key: await summarize(owner, rec) });
+}
+
+async function testKeyFor(owner: string, c: import("hono").Context<Env>, actor: string) {
+  requireKeyStorage();
+  const kv = kvStore();
+  const rec = await readRecord(kv, owner);
+  if (!rec) throw new KeyError("no saved key", 404, "no_key");
+  await rate(actor, "save");
+  const apiKey = await openKey(owner, rec);
+  const v = await validateKey(rec.provider, apiKey, rec.model);
+  const next: KeyRecord = { ...rec, valid: v.ok, validatedAt: Date.now(), lastError: v.ok ? null : v.error };
+  await writeRecord(kv, owner, next);
+  return c.json({ ok: v.ok, ...(v.ok ? {} : { error: v.error }), key: await summarize(owner, next) });
+}
+
+// Users manage only their own key: the account always comes from the session.
+app.get("/api/llm/key", requireSession, requireAllowed, async (c) => {
+  const rec = await readRecord(kvStore(), c.var.account);
+  return c.json({ enabled: keyStorageConfigured(), key: rec ? await summarize(c.var.account, rec) : null });
+});
+app.put("/api/llm/key", requireSession, requireAllowed, (c) => saveKeyFor(c.var.account, c, c.var.account));
+app.post("/api/llm/key/test", requireSession, requireAllowed, (c) => testKeyFor(c.var.account, c, c.var.account));
+app.post("/api/llm/models", requireSession, requireAllowed, (c) => modelsFor(c.var.account, c, c.var.account));
+app.delete("/api/llm/key", requireSession, requireAllowed, async (c) => {
+  await deleteRecord(kvStore(), c.var.account);
+  return c.json({ ok: true, key: null });
+});
+
+// Platform default key (ADMIN_ACCOUNTS only, via the /api/admin/* middleware). Takes precedence over NEARAI_API_KEY.
+async function platformInfo(): Promise<PlatformKeyInfo> {
+  const rec = await readRecord(kvStore(), PLATFORM);
+  const stored = rec ? await summarize(PLATFORM, rec) : null;
+  return {
+    stored,
+    env: {
+      configured: !!config.nearAiApiKey,
+      baseUrl: config.nearAiBaseUrl,
+      provider: providerForBaseUrl(config.nearAiBaseUrl),
+      model: config.nearAiModel,
+      last4: config.nearAiApiKey ? last4(config.nearAiApiKey) : null,
+    },
+    active: stored?.valid ? "platform" : "env",
+  };
+}
+app.get("/api/admin/llm-key", async (c) => c.json({ enabled: keyStorageConfigured(), ...(await platformInfo()) }));
+app.put("/api/admin/llm-key", async (c) => {
+  const r = await saveKeyFor(PLATFORM, c, c.var.account);
+  return c.json({ ...(await r.json()), ...(await platformInfo()) });
+});
+app.post("/api/admin/llm-models", (c) => modelsFor(PLATFORM, c, c.var.account));
+app.delete("/api/admin/llm-key", async (c) => {
+  await deleteRecord(kvStore(), PLATFORM);
+  return c.json({ ok: true, ...(await platformInfo()) });
+});
+/** Tests the stored platform key, or the env key when none is stored. */
+app.post("/api/admin/llm-key/test", async (c) => {
+  if (await readRecord(kvStore(), PLATFORM)) {
+    const r = await testKeyFor(PLATFORM, c, c.var.account);
+    return c.json({ ...(await r.json()), tested: "platform", ...(await platformInfo()) });
+  }
+  await rate(c.var.account, "save");
+  const env = envTargetSafe();
+  if (!env) return c.json({ ok: false, error: "no stored platform key and NEARAI_API_KEY is not set", tested: "env", ...(await platformInfo()) });
+  const v = env.provider ? await validateKey(env.provider, env.apiKey, env.model) : { ok: false as const, status: 0, error: "NEARAI_BASE_URL is not one of the known providers; can't test it here" };
+  return c.json({ ok: v.ok, ...(v.ok ? {} : { error: v.error }), tested: "env", ...(await platformInfo()) });
+});
+const envTargetSafe = () => {
+  try {
+    return envTarget();
+  } catch {
+    return null;
+  }
+};
 
 // ---------- token sites (public) ----------
 

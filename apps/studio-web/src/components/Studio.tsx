@@ -20,6 +20,7 @@ import {
   type LaunchIdea,
   type QuoteResponse,
   type SessionResponse,
+  type LlmKeySummary,
 } from "@osl/schema";
 import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, friendlyWalletError, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
@@ -27,7 +28,7 @@ import { viewCall } from "../lib/near";
 import { getVaultBalance, txFailure } from "../lib/near";
 import { tokensIntents } from "../lib/api";
 import { classifyPull, minsFor, quotePosition, removablePositions, removeLiquidityCall, UNPROTECTED, type DclPosition, type PullItem, type PullResult } from "../lib/dcl";
-import { aiComputeCost, ApiError, tokensAction, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
+import { aiComputeCost, ApiError, isUserKeyError, tokensAction, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
 import { applyResults, intentsToApply, isDone, loadDraft, loadIntentsPending, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveIntentsPending, saveRun, type LaunchRun, type RunItem } from "../lib/run";
 import MyTokens from "./MyTokens";
 import { webpIcons } from "../lib/icon";
@@ -35,6 +36,7 @@ import { DCL_CONTRACT, EXPLORER_BASE, NETWORK } from "../lib/config";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { WaitlistForm } from "./WaitlistForm";
 import Admin from "./Admin";
+import AiKey from "./AiKey";
 import { VAULT_CONTRACT } from "../lib/config";
 
 type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist" | "delete" | "intents";
@@ -60,6 +62,11 @@ export default function Studio() {
   const launchStop = useRef(false);
   const intentsDefault = useRef(false);
   const [aiCost, setAiCost] = useState<string | null>(null);
+  /** The user's own AI key (summary only; the key itself never reaches the browser after saving). */
+  const [myKey, setMyKey] = useState<LlmKeySummary | null>(null);
+  /** Their key failed during generation: message + offer the platform key (never used silently). */
+  const [keyFail, setKeyFail] = useState<string | null>(null);
+  const [keyEpoch, setKeyEpoch] = useState(0);
   const [ideas, setIdeas] = useState<LaunchIdea[]>([]);
   const [picked, setPicked] = useState<boolean[]>([]);
   /** Per idea: switch the NEAR Intents widget on for its page right after launch. */
@@ -606,13 +613,15 @@ export default function Studio() {
     });
 
   /** Generates `count` ideas as MAX_BATCH-sized /api/generate calls, GEN_CONCURRENCY at a time. */
-  const generateRun = () =>
+  const generateRun = (usePlatform = false) =>
     run("generate", async () => {
       const token = await authToken(account!);
       if (!token) return;
+      setKeyFail(null);
       const n = clampRun(count);
       const per = BigInt(aiCost ?? (await aiComputeCost()));
-      const need = per * BigInt(n);
+      const own = !usePlatform && !!myKey?.valid;
+      const need = own ? 0n : per * BigInt(n);
       const bal = BigInt(await getVaultBalance(account!));
       if (bal < need) {
         throw new Error(`${n} idea${n > 1 ? "s" : ""} cost ${formatNear(need)} NEAR in credits; you have ${formatNear(bal)}. Top up at least ${formatNear(need - bal)} NEAR first.`);
@@ -630,9 +639,10 @@ export default function Studio() {
       let got = 0;
       let lastErr: string | null = null;
       let authErr: unknown = null;
+      let ownKeyErr: ApiError | null = null;
       setGenProgress(`Generated 0/${n}…`);
       // A second, smaller round tops up ideas dropped as duplicates (charged like any chunk).
-      for (let round = 0; round < 2 && got < n && !genStop.current && !authErr; round++) {
+      for (let round = 0; round < 2 && got < n && !genStop.current && !authErr && !ownKeyErr; round++) {
         const before = got;
         let seq = round * MAX_RUN; // each chunk/idea gets its own angle; a top-up round shifts to fresh ones
         await pool(
@@ -640,14 +650,19 @@ export default function Studio() {
             const at = seq;
             seq += size;
             return async () => {
-            if (genStop.current || authErr) throw Object.assign(new Error("stopped"), { noRetry: true });
+            if (genStop.current || authErr || ownKeyErr) throw Object.assign(new Error("stopped"), { noRetry: true });
             try {
-              const r = await generate(prompt.trim(), account!, token, size, used.slice(-24), at);
+              const r = await generate(prompt.trim(), account!, token, size, used.slice(-24), at, usePlatform);
               return r.ideas ?? [r.idea];
             } catch (e) {
               if (isAuthErr(e)) {
                 authErr = e;
                 Object.assign(e as object, { noRetry: true });
+              }
+              if (isUserKeyError(e)) {
+                ownKeyErr = e;
+                Object.assign(e as object, { noRetry: true });
+                throw Object.assign(new Error("stopped"), { noRetry: true });
               }
               throw e;
             }
@@ -679,6 +694,12 @@ export default function Studio() {
       }
       await refresh();
       if (authErr) throw authErr;
+      if (ownKeyErr) {
+        setKeyFail((ownKeyErr as ApiError).message);
+        setKeyEpoch((k) => k + 1); // reload the key status (a rejected key is now marked not working)
+        setGenProgress(`Generated ${got}/${n}. Stopped: your AI key failed.`);
+        return;
+      }
       if (got === 0 && lastErr) throw new Error(lastErr);
       setGenProgress(got >= n ? `Generated ${got}/${n} ✓` : `Generated ${got}/${n}. ${genStop.current ? "Stopped." : lastErr ? `Some chunks failed: ${lastErr}` : "The rest came back as duplicates."}`);
     });
@@ -715,6 +736,7 @@ export default function Studio() {
   }, []);
 
   const isLocked = locked !== false;
+  const ownKey = !!myKey?.valid;
   const liveLaunches = launches?.filter((l) => !l.deletedAt) ?? null;
   const lrunCounts = lrun ? runCounts(lrun) : null;
   const walletPrompts = Math.max(1, Math.ceil(chosen.length / 10));
@@ -741,6 +763,11 @@ export default function Studio() {
       await refresh();
     } catch (e) {
       if (e instanceof UnauthorizedError) setSession(null);
+      if (isUserKeyError(e)) {
+        setKeyFail(e.message);
+        setKeyEpoch((k) => k + 1);
+        return;
+      }
       setError(`regenerate failed: ${friendlyWalletError(e).message}`);
     } finally {
       setRegen((r) => { const n = new Set(r); n.delete(i); return n; });
@@ -1042,16 +1069,52 @@ export default function Studio() {
               onBlur={() => customCount && setCustomCount(String(clampRun(customCount)))}
             />
           </div>
-          <button disabled={busy !== null || prompt.trim().length < 3} onClick={generateRun}>
+          <button disabled={busy !== null || prompt.trim().length < 3} onClick={() => generateRun()}>
             {busy === "generate" ? "Thinking…" : count > 1 ? `Generate ${count}` : "Generate"}
           </button>
           {busy === "generate" && (
             <button className="ghost" onClick={() => (genStop.current = true)}>Stop</button>
           )}
         </div>
+        <p className="small gen-key">
+          {ownKey ? (
+            <>Using your {myKey!.providerLabel} key · …{myKey!.last4 ?? "????"} · <code>{myKey!.model}</code> · <strong>no AI fee</strong></>
+          ) : myKey && !myKey.valid ? (
+            <>Your {myKey.providerLabel} key · …{myKey.last4 ?? "????"} isn't working; fix it in <strong>AI key</strong> below or use the platform key.</>
+          ) : (
+            <>Using the platform AI key{aiCost ? ` · ${formatNear(BigInt(aiCost), 2)} NEAR of credits per idea` : ""}</>
+          )}
+        </p>
+        {aiCost && (
+          <div className="cost-wrap">
+            <table className="cost-table small" aria-label="AI cost by key">
+              <tbody>
+                <tr className={ownKey ? "muted" : ""}>
+                  <td>Platform key{!ownKey ? " (in use)" : ""}</td>
+                  <td className="muted">{formatNear(BigInt(aiCost), 2)} × {count} idea{count > 1 ? "s" : ""}, from vault credit</td>
+                  <td className="num">{formatNear(BigInt(aiCost) * BigInt(count))} NEAR</td>
+                </tr>
+                <tr className={ownKey ? "" : "muted"}>
+                  <td>Your own key{ownKey ? " (in use)" : ""}</td>
+                  <td className="muted">{ownKey ? `billed by ${myKey!.providerLabel} to your account` : "add a NEAR AI or Ollama key below"}</td>
+                  <td className="num">0 NEAR</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+        {keyFail && (
+          <div className="error gen-fallback" role="alert">
+            <span>{keyFail}</span>
+            <button disabled={busy !== null} onClick={() => generateRun(true)}>
+              Use the platform key instead{aiCost ? ` (${formatNear(BigInt(aiCost) * BigInt(count))} NEAR)` : ""}
+            </button>
+            <button className="ghost" onClick={() => setKeyFail(null)}>Dismiss</button>
+          </div>
+        )}
         <p className="muted small">
           {count} idea{count > 1 ? "s" : ""}
-          {aiCost ? ` ≈ ${formatNear(BigInt(aiCost) * BigInt(count))} NEAR of credits` : ""}
+          {ownKey ? " · no AI fee (your key)" : aiCost ? ` ≈ ${formatNear(BigInt(aiCost) * BigInt(count))} NEAR of credits` : ""}
           {count > MAX_BATCH ? ` · ${Math.ceil(count / MAX_BATCH)} requests of ${MAX_BATCH}, ${GEN_CONCURRENCY} at a time` : ""}
           {genProgress && <> · <strong>{genProgress}</strong></>}
         </p>
@@ -1060,7 +1123,7 @@ export default function Studio() {
             <span aria-hidden="true">💡</span>
             <p>
               <strong>Your ideas land here.</strong> Describe a vibe, pick how many (up to {MAX_RUN}), and hit Generate. Each idea costs a tiny
-              bit of vault credit; you can tweak tickers before launching.
+              bit of vault credit (nothing with your own AI key); you can tweak tickers before launching.
             </p>
           </div>
         )}
@@ -1068,6 +1131,15 @@ export default function Studio() {
       {error && ideas.length === 0 && !lrun && <p className="error">{error}</p>}
       </div>
     </div>
+
+    {session ? (
+      <AiKey key={`${session.accountId}:${keyEpoch}`} scope="user" getToken={adminToken} onAuthError={onAdminError} onChange={setMyKey} aiCost={aiCost} />
+    ) : (
+      <section className="card aikey run-full">
+        <h2>AI key</h2>
+        <p className="muted small">Verify your wallet to use your own NEAR AI or Ollama key (no AI fee from your credits).</p>
+      </section>
+    )}
 
     {ideas.length > 0 && (
       <section className="card s-ideas run-full">

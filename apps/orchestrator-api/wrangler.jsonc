@@ -1,6 +1,7 @@
 {
   // Orchestrator API as a Cloudflare Worker. Deploy: `npx wrangler deploy` from this directory.
-  // Secrets (not in this file): `wrangler secret put NEARAI_API_KEY`, `wrangler secret put RELAYER_PRIVATE_KEY`.
+  // Secrets (not in this file): `wrangler secret put NEARAI_API_KEY`, `wrangler secret put RELAYER_PRIVATE_KEY`,
+  // `wrangler secret put KEY_ENCRYPTION_KEY` (AES-256-GCM master key for stored AI keys; README "AI keys").
   "name": "one-shot-launchpad-api",
   "main": "src/worker.ts",
   "compatibility_date": "2026-05-01",
@@ -31,7 +32,7 @@
   },
   // ---- Mainnet: `bun run deploy:api:mainnet` (worker one-shot-launchpad-api-mainnet). Not deployed yet. ----
   // Vars are NOT inherited by wrangler envs, so everything is repeated here. Secrets (set with --env mainnet):
-  // RELAYER_PRIVATE_KEY, SESSION_SECRET (new, mainnet only), NEARAI_API_KEY. See docs/mainnet-deploy.md.
+  // RELAYER_PRIVATE_KEY, SESSION_SECRET (new, mainnet only), NEARAI_API_KEY, KEY_ENCRYPTION_KEY (mainnet only). See docs/mainnet-deploy.md.
   "env": {
     "mainnet": {
       "name": "one-shot-launchpad-api-mainnet",

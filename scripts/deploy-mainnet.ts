@@ -245,4 +245,5 @@ console.log(`\nNext (see docs/mainnet-deploy.md):
     RELAYER_PRIVATE_KEY  <- ${RELAYER_KEY_FILE} (.private_key)
     SESSION_SECRET       <- ${SESSION_SECRET_FILE}
     NEARAI_API_KEY       <- same provider key as testnet
+    KEY_ENCRYPTION_KEY   <- ${resolve(SECRETS, "yeetpad_key_encryption_key_mainnet")}
   vars: NEAR_NETWORK=mainnet VAULT_CONTRACT=${VAULT} FT_FACTORY_CONTRACT=${FACTORY} RELAYER_ACCOUNT_ID=${RELAYER} AUTH_RECIPIENT=${VAULT}`);

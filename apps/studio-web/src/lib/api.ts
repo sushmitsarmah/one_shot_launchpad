@@ -15,6 +15,11 @@ import type {
   QuoteResponse,
   RheaOptions,
   SiteConfig,
+  LlmKeySummary,
+  LlmModel,
+  LlmProvider,
+  LlmProviderInfo,
+  PlatformKeyInfo,
 } from "@osl/schema";
 import { INTENTS_TOKENS_MAX, MAX_BATCH, TOKENS_DELETE_MAX, chunk, pool, type IntentsConfig, type TokensActionResult } from "@osl/schema";
 import { API_URL } from "./config";
@@ -56,8 +61,11 @@ async function post<T>(path: string, body: unknown, token: string): Promise<T> {
   return j as T;
 }
 
-export const generate = (prompt: string, ownerWallet: string, token: string, count = 1, avoid: string[] = [], seq?: number) =>
-  post<GenerateResponse>("/api/generate", { prompt, ownerWallet, count, ...(avoid.length ? { avoid } : {}), ...(seq !== undefined ? { seq } : {}) }, token);
+export const generate = (prompt: string, ownerWallet: string, token: string, count = 1, avoid: string[] = [], seq?: number, usePlatformKey = false) =>
+  post<GenerateResponse>("/api/generate", { prompt, ownerWallet, count, ...(avoid.length ? { avoid } : {}), ...(seq !== undefined ? { seq } : {}), ...(usePlatformKey ? { usePlatformKey: true } : {}) }, token);
+
+/** The user's own key failed or is marked invalid (HTTP 424): nothing was charged; offer the platform key. */
+export const isUserKeyError = (e: unknown): e is ApiError => e instanceof ApiError && e.status === 424 && /^user_key_/.test(String(e.body?.code ?? ""));
 
 /** Credits charged per generated idea (yoctoNEAR), from /api/health. */
 export const aiComputeCost = () => get<{ aiComputeCost?: string }>("/api/health").then((h) => h.aiComputeCost ?? "10000000000000000000000");
@@ -212,7 +220,7 @@ export async function appLocked(): Promise<boolean> {
 }
 
 
-async function authed<T>(method: "GET" | "POST", path: string, token: string, body?: unknown): Promise<T> {
+async function authed<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, token: string, body?: unknown): Promise<T> {
   const r = await fetch(`${API_URL}${path}`, {
     method,
     headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
@@ -239,3 +247,17 @@ export const justhootPrepare = (ideas: LaunchIdea[], icons: Record<string, strin
 
 export const justhootFinalize = (items: { ticker: string; txHash: string }[], token: string): Promise<JusthootFinalizeResponse> =>
   finalizeChunked("/api/justhoot/finalize", items, token);
+
+// ---------- AI keys (bring your own key; the API never returns a key) ----------
+export const llmProviders = () => get<{ providers: LlmProviderInfo[]; aiComputeCost: string; enabled: boolean }>("/api/llm/providers");
+export type KeyScope = "user" | "platform";
+const keyPath = (scope: KeyScope) => (scope === "platform" ? "/api/admin/llm-key" : "/api/llm/key");
+export const getMyKey = (token: string) => authed<{ enabled: boolean; key: LlmKeySummary | null }>("GET", "/api/llm/key", token);
+export const getPlatformKey = (token: string) => authed<PlatformKeyInfo & { enabled: boolean }>("GET", "/api/admin/llm-key", token);
+export const listLlmModels = (scope: KeyScope, provider: LlmProvider, apiKey: string | undefined, token: string) =>
+  authed<{ provider: LlmProvider; models: LlmModel[]; defaultModel: string | null }>("POST", scope === "platform" ? "/api/admin/llm-models" : "/api/llm/models", token, { provider, ...(apiKey ? { apiKey } : {}) });
+export const saveLlmKey = (scope: KeyScope, body: { provider: LlmProvider; apiKey?: string; model?: string }, token: string) =>
+  authed<{ ok: true; key: LlmKeySummary } & Partial<PlatformKeyInfo>>("PUT", keyPath(scope), token, body);
+export const testLlmKey = (scope: KeyScope, token: string) =>
+  authed<{ ok: boolean; error?: string; key?: LlmKeySummary; tested?: "platform" | "env" } & Partial<PlatformKeyInfo>>("POST", `${keyPath(scope)}/test`, token, {});
+export const deleteLlmKey = (scope: KeyScope, token: string) => authed<{ ok: true } & Partial<PlatformKeyInfo>>("DELETE", keyPath(scope), token);

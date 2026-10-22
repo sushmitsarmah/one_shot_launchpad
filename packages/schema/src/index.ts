@@ -80,6 +80,8 @@ export const GenerateRequest = z.object({
   seq: z.number().int().min(0).max(MAX_RUN * 3).optional(),
   /** Optional: the account comes from the session; if sent it must match it. */
   ownerWallet: NearAccountId.optional(),
+  /** Use the platform key (normal AI fee) even if the caller saved their own key. Only sent after the user chose it. */
+  usePlatformKey: z.boolean().optional(),
 });
 export type GenerateRequest = z.infer<typeof GenerateRequest>;
 
@@ -89,6 +91,10 @@ export const GenerateResponse = z.object({
   ideas: z.array(LaunchIdea),
   charged: z.string(), // yoctoNEAR
   txHash: z.string().nullable(),
+  /** Which key ran the request: the caller's own (no AI fee), the admin-set platform key, or the env fallback. */
+  keySource: z.enum(["user", "platform", "env"]).optional(),
+  provider: z.string().nullable().optional(),
+  model: z.string().optional(),
 });
 export type GenerateResponse = z.infer<typeof GenerateResponse>;
 
@@ -444,3 +450,52 @@ export const IntentsQuoteRequest = z.object({
   slippageBps: z.number().int().min(10).max(500).optional(),
 });
 export type IntentsQuoteRequest = z.infer<typeof IntentsQuoteRequest>;
+// ---------- AI keys (bring your own key) ----------
+/** Fixed allowlist; the API rejects anything else (no custom base URLs). */
+export const LLM_PROVIDERS = ["nearai", "ollama"] as const;
+export const LlmProvider = z.enum(LLM_PROVIDERS);
+export type LlmProvider = z.infer<typeof LlmProvider>;
+export const LLM_KEY_MAX = 512;
+
+/** PUT /api/llm/key (and /api/admin/llm-key). apiKey may be omitted to change only the model of a saved key. */
+export const LlmKeyRequest = z
+  .object({
+    provider: LlmProvider,
+    apiKey: z.string().max(LLM_KEY_MAX * 4).optional(),
+    model: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+export type LlmKeyRequest = z.infer<typeof LlmKeyRequest>;
+
+export const LlmModelsRequest = z.object({ provider: LlmProvider, apiKey: z.string().max(LLM_KEY_MAX * 4).optional() }).strict();
+export type LlmModelsRequest = z.infer<typeof LlmModelsRequest>;
+
+export interface LlmProviderInfo {
+  id: LlmProvider;
+  label: string;
+  baseUrl: string;
+  keysUrl: string;
+  defaultModels: string[];
+}
+/** Never contains the key: only provider, model, last 4 characters, dates and validity. */
+export interface LlmKeySummary {
+  provider: LlmProvider;
+  providerLabel: string;
+  model: string;
+  last4: string | null;
+  createdAt: number;
+  updatedAt: number;
+  valid: boolean;
+  validatedAt: number;
+  lastError: string | null;
+}
+export interface LlmModel {
+  id: string;
+  price?: number;
+}
+export interface PlatformKeyInfo {
+  stored: LlmKeySummary | null;
+  env: { configured: boolean; baseUrl: string; provider: LlmProvider | null; model: string; last4: string | null };
+  /** What generation uses now: the stored platform key when it's valid, else the env secret. */
+  active: "platform" | "env";
+}

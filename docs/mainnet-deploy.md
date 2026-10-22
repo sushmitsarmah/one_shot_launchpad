@@ -54,6 +54,9 @@ Rhea ~0.12, Nearly ~0.3, JustHoot ~0.05 + generation credits.
    jq -r .private_key ~/.secrets/near_mainnet_relayer_yeetpad.json | npx wrangler secret put RELAYER_PRIVATE_KEY --env mainnet
    npx wrangler secret put SESSION_SECRET --env mainnet < ~/.secrets/yeetpad_mainnet_session_secret
    npx wrangler secret put NEARAI_API_KEY --env mainnet   # same LLM key as testnet
+   # AES-256-GCM master key for stored AI keys (user BYOK + Admin "Platform AI key"); mainnet has its own.
+   # Losing it makes every stored AI key unreadable (users would have to re-add them); never reuse the testnet one.
+   npx wrangler secret put KEY_ENCRYPTION_KEY --env mainnet < ~/.secrets/yeetpad_key_encryption_key_mainnet
    ```
 6. **Deploy the mainnet API**: `CLOUDFLARE_ACCOUNT_ID=… bun run deploy:api:mainnet`;
    check `GET /api/health` (network `mainnet`, venues: rhea on, nearly/justhoot off).

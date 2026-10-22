@@ -6,6 +6,7 @@ interface ImportMetaEnv {
   readonly PUBLIC_NETWORK?: "testnet" | "mainnet";
   readonly PUBLIC_LAUNCH_COST?: string;
   readonly PUBLIC_SITE_URL?: string;
+  readonly PUBLIC_DCL_CONTRACT?: string;
 }
 interface ImportMeta {
   readonly env: ImportMetaEnv;

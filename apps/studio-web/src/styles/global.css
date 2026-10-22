@@ -231,3 +231,13 @@ details summary { cursor: pointer; font-weight: 700; }
 .idea-intents { display: block; margin: 0.2rem 0 0.4rem; }
 .ir-intents { margin-right: 0.3rem; }
 .intents-all { margin-left: 0.5rem; }
+
+/* AI key (bring your own key) */
+.aikey .aikey-status { margin: 0.2rem 0 0; }
+.aikey .aikey-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.4rem; }
+.aikey .aikey-input { flex: 1 1 280px; min-width: 0; font-family: ui-monospace, monospace; }
+.aikey select { max-width: 100%; }
+.aikey .aikey-actions { flex-wrap: wrap; gap: 0.4rem; }
+.aikey .error-text { color: #c0153a; font-weight: 700; }
+.gen-key { margin: 0.3rem 0; }
+.gen-fallback { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AdminAllowedItem, AdminResult, AdminWaitlistItem, WaitlistStatus } from "@osl/schema";
 import { adminAction, adminWaitlist, type WaitlistCounts } from "../lib/api";
+import AiKey from "./AiKey";
 
 type Filter = "all" | WaitlistStatus;
 type Action = "approve" | "revoke" | "remove";
@@ -94,6 +95,7 @@ export default function Admin({ getToken, onAuthError }: { getToken: () => Promi
 
   return (
     <div className="admin">
+      <AiKey scope="platform" getToken={getToken} onAuthError={onAuthError} />
       <section className="card admin-card">
         <div className="row between admin-head">
           <div>

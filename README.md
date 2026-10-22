@@ -121,6 +121,8 @@ Routes in the web app: `/` is the landing page, `/app/` is the studio (wallet co
 | `NEARAI_BASE_URL` | `https://cloud-api.near.ai/v1` | NEAR AI Cloud gateway (OpenAI-compatible) |
 | `NEARAI_MODEL` | `z-ai/glm-5.3-flash` | any id from `GET https://cloud-api.near.ai/v1/models` |
 | `NEARAI_API_KEY` | – | from https://cloud.near.ai (API Keys) |
+| `KEY_ENCRYPTION_KEY` | – | base64 32-byte AES-256-GCM master key for stored AI keys (`openssl rand -base64 32`); unset = "bring your own key" disabled |
+| `KEY_ENCRYPTION_KEY_VERSION` | `1` | version stamped on new records; `KEY_ENCRYPTION_KEY_PREV` + `_PREV_VERSION` still decrypt older ones during a rotation |
 | `LLM_MOCK` | off | `1` = no LLM call |
 | `NEAR_MOCK` | off | `1` = no chain calls |
 | `NEAR_RPC_URL` | `https://test.rpc.fastnear.com` | |
@@ -218,6 +220,19 @@ Tests: `src/gate.test.ts` (lock/allowlist/admin parsing, KV approvals, 403 on se
 
 Uses the NEAR AI Cloud gateway, OpenAI-compatible: `POST https://cloud-api.near.ai/v1/chat/completions` with `Authorization: Bearer $NEARAI_API_KEY` ([quickstart](https://docs.near.ai/cloud/quickstart), [OpenAI compatibility](https://github.com/nearai/docs/blob/main/docs/cloud/guides/openai-compatibility.mdx), [API reference](https://docs.near.ai/api-reference/chat/create-chat-completion)). The client asks for `response_format: json_schema` (generated from the zod schema); if a model rejects that, it retries with `json_object`. The output is always validated with zod.
 
+The format fallback is json_schema → json_object → no `response_format` (only a 400/422 moves on; auth/quota errors stop at once), so it works for every model on both allowed providers.
+
+### AI keys: bring your own key + platform key
+
+* **Providers** are a fixed allowlist in `apps/orchestrator-api/src/llmkeys.ts`: **NEAR AI** (`https://cloud-api.near.ai/v1`) and **Ollama** (`https://ollama.com/v1`). No custom base URLs (SSRF / key exfiltration). Every request that carries a stored key goes through `guardedFetch`: https, allowlisted URL only, redirects not followed.
+* **Studio → AI key** (signed-in users): pick a provider, paste a key, pick a model (the API fetches `GET /models` with that key; cheap models first), Save. The API validates the key with a cheap authenticated call (Ollama `POST /api/me`; NEAR AI a 1-token chat completion, since `/models` is public on both) and stores it only if it works. Test / Change model / Replace / Delete.
+* **Generation with your own key** calls your provider and **skips the 0.01 NEAR AI fee** (`charged: "0"`, `keySource: "user"`). Credits are still needed for launches. If your key fails (401/403/402/429) the API answers `424` (`user_key_failed` / `user_key_invalid`), charges nothing, and the Studio offers "Use the platform key instead" (normal fee); it never falls back on its own.
+* **Admin → Platform AI key** (ADMIN_ACCOUNTS only, checked server-side): same form; stored as `llmkey:__platform__`, takes precedence over the `NEARAI_API_KEY` secret (the fallback, also used if the stored key stops validating).
+* **Storage**: KV `llmkey:<account>` = `{v, kv (master key version), provider, model, iv, ct, createdAt, updatedAt, valid, validatedAt, lastError}`. `ct` is AES-256-GCM (WebCrypto) under `KEY_ENCRYPTION_KEY`, random 12-byte IV per record, AAD `yeetpad-llmkey|v1|<account>|<provider>`. Only ciphertext touches storage; even the last 4 characters are derived by decrypting.
+* **Write-only**: no endpoint returns a key (only provider, model, last 4, dates, validity). Provider error text is dropped (it can echo the key); `llm_usage` logs carry source/provider/model/token counts only.
+* **Limits**: 10 key saves/tests and 30 model lists per account per hour; keys are whitespace-stripped, 8-512 printable ASCII characters.
+* Endpoints: `GET /api/llm/providers`; session: `GET|PUT|DELETE /api/llm/key`, `POST /api/llm/key/test`, `POST /api/llm/models`; admin: `GET|PUT|DELETE /api/admin/llm-key`, `POST /api/admin/llm-key/test`, `POST /api/admin/llm-models`. Tests: `src/llmkeys.test.ts`.
+
 ## Deploy contracts (testnet)
 
 ```bash
@@ -259,6 +274,8 @@ npx -y wrangler@4.86.0 deploy               # or: bun run deploy:api from the re
 printf '%s' "$NEARAI_API_KEY"      | npx -y wrangler@4.86.0 secret put NEARAI_API_KEY
 printf '%s' "$RELAYER_PRIVATE_KEY" | npx -y wrangler@4.86.0 secret put RELAYER_PRIVATE_KEY
 openssl rand -hex 32               | npx -y wrangler@4.86.0 secret put SESSION_SECRET   # rotating it logs everyone out
+# AI key master key (testnet copy kept in ~/.secrets/yeetpad_key_encryption_key_testnet, chmod 600; losing it = stored keys unreadable)
+npx -y wrangler@4.86.0 secret put KEY_ENCRYPTION_KEY < ~/.secrets/yeetpad_key_encryption_key_testnet
 ```
 
 Wrangler is pinned to 4.86.0 because newer 4.x releases need Node 22 (the box has Node 20); with Node 22+ any 4.x works. `bun run deploy:api` needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the environment.

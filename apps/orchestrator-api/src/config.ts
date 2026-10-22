@@ -33,6 +33,12 @@ export function buildConfig(src: EnvSource = {}) {
     nearAiModel: env("NEARAI_MODEL", "z-ai/glm-5.3-flash") as string,
     llmMaxTokens: Number(env("LLM_MAX_TOKENS", "500")),
     nearAiApiKey: env("NEARAI_API_KEY"),
+    /** AES-256-GCM master key (base64, 32 bytes) for stored LLM keys (Worker secret). Unset = BYOK disabled. */
+    keyEncryptionKey: env("KEY_ENCRYPTION_KEY"),
+    keyEncryptionKeyVersion: Number(env("KEY_ENCRYPTION_KEY_VERSION", "1")) || 1,
+    /** Previous master key during a rotation (decrypt only). */
+    keyEncryptionKeyPrev: env("KEY_ENCRYPTION_KEY_PREV"),
+    keyEncryptionKeyPrevVersion: Number(env("KEY_ENCRYPTION_KEY_PREV_VERSION", "0")) || 0,
 
     // NEAR network (NEAR_NETWORK=testnet|mainnet)
     nearMock: flag("NEAR_MOCK"),
