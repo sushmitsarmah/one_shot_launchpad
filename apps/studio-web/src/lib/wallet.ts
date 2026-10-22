@@ -79,6 +79,36 @@ export function takeRedirectedNearly(): { ticker: string; txHash: string }[] {
   return pending.slice(0, hashes.length).map((ticker, i) => ({ ticker, txHash: hashes[i] }));
 }
 
+export const RELIST_PENDING = "yeetpad.relistPending";
+
+/**
+ * Hands a Yeetpad token the user holds to the vault for a Rhea listing: registers the vault on the
+ * token (no-op refund if already registered) and `ft_transfer_call(vault, amount, "list_on_rhea")`.
+ * Returns false when a redirect wallet left the page (finish with takeRedirectedRelist on return).
+ */
+export async function sendForRelist(tokenId: string, amount: string): Promise<boolean> {
+  const { selector } = await initWallet();
+  const wallet = await selector.wallet();
+  localStorage.setItem(RELIST_PENDING, tokenId);
+  const res = await wallet.signAndSendTransaction({
+    receiverId: tokenId,
+    actions: [
+      actionCreators.functionCall("storage_deposit", { account_id: VAULT_CONTRACT, registration_only: true }, 10_000_000_000_000n, 1_250_000_000_000_000_000_000n),
+      actionCreators.functionCall("ft_transfer_call", { receiver_id: VAULT_CONTRACT, amount, msg: "list_on_rhea" }, 60_000_000_000_000n, 1n),
+    ],
+  });
+  if (!res) return false;
+  localStorage.removeItem(RELIST_PENDING);
+  return true;
+}
+
+export function takeRedirectedRelist(): string | null {
+  const t = localStorage.getItem(RELIST_PENDING);
+  if (!t || !new URL(location.href).searchParams.get("transactionHashes")) return null;
+  localStorage.removeItem(RELIST_PENDING);
+  return t;
+}
+
 export async function signOut() {
   const { clearSession } = await import("./auth");
   clearSession();

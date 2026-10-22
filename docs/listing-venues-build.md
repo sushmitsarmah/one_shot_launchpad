@@ -24,6 +24,17 @@ It shows the cost per token and the total (from `/api/quote`, which reads the on
 - Live check: 0.01 wNEAR → 9,899 tokens, which is 10,000 at 1e-6 NEAR less the 1% fee.
 - `creatorPct` (default 0) of the vault's holding goes to the creator; the rest goes to the pool.
 
+### Live results (2026-10-22, v0.3.0)
+- Fresh single launch `yrz6r36` (Y side) passed end to end. Launch: Gf5gi4oR1xkPeoLqx8kb7hznmADYK6SdSfgxw6ngWENu; listing: B91yNwFD5Zwz3KXgwubWYYi8N2SGjSoHuQ9W3gLKGp9p.
+  - Creator owns `#2520`. A 0.01 wNEAR quote returns 9,899 tokens.
+  - Credit spent: 1.84253.
+- 2-token batch passed. Launch: 44EeCpWpEyMbnqSQst49WfKfVqmbP2BjHRupBXHLhAur.
+  - `arz7ej0` (X side, range [200, 500000]; quote 9,704): listing B6LaJUtMuD5y7r6RaCMJyhzDUZXv83dTwHHMPBwy3xDS.
+  - `zrz7ej0` (Y side): listing E2znBHNfAcT927Bsg7NEdXFmXuosduJXitLVsd6yj5Ab.
+  - Credit spent: 3.68506. The batch took 24.5 s.
+- Studio "list on Rhea" button: the two-action tx (vault `storage_deposit` + `ft_transfer_call … "list_on_rhea"`) followed by `/api/list/rhea` passed on `yrglz8c`. Listing: 2ujpKme24KW2XsnNtMQjhKZg5RsPD6vpwbAyMGT9qkXj; cost 0.0025.
+- Plain `"Deposit"` into testnet DCL still runs out of gas, so Nearly's testnet factory is still broken. No new Nearly launches since #22.
+
 ## Nearly (creator's wallet signs)
 - `POST /api/nearly/prepare` reserves the slug and builds `launch {args:{name,symbol,icon(SVG data URI ≤16 KB),description,links:{website: yeetpad.fun/t/<slug>},dev_buy:"0"}}`. It uses 300 Tgas and the deposit from `quote_launch`.
 - Studio signs these with `signAndSendTransactions`, in chunks of `NEARLY_BATCH_CHUNK` (default 10).

@@ -97,12 +97,40 @@ if (process.env.RELIST) {
     const r = await acct.callFunctionRaw({ contractId: VAULT, methodName: "deposit_credits", args: {}, deposit: cost - credit, gas: 30n * 10n ** 12n });
     console.log(`topped up credit by ${fmt(cost - credit)}: ${EXPLORER}${r.transaction.hash}`);
   }
-  const t = await acct.callFunctionRaw({ contractId: tokenId, methodName: "ft_transfer_call", args: { receiver_id: VAULT, amount: bal.toString(), msg: "list_on_rhea" }, deposit: 1n, gas: 50n * 10n ** 12n });
+  // Same two actions Studio's "list on Rhea" button signs.
+  const t: any = await acct.signAndSendTransaction({
+    receiverId: tokenId,
+    actions: [
+      actionCreators.functionCall("storage_deposit", { account_id: VAULT, registration_only: true }, 10n * 10n ** 12n, 1_250_000_000_000_000_000_000n),
+      actionCreators.functionCall("ft_transfer_call", { receiver_id: VAULT, amount: bal.toString(), msg: "list_on_rhea" }, 60n * 10n ** 12n, 1n),
+    ],
+  });
   console.log(`sent ${bal} to vault for listing: ${EXPLORER}${t.transaction.hash}`);
   const before = BigInt(await view(VAULT, "get_balance", { account_id: who }));
   const res = await api("/api/list/rhea", { tokenId });
   console.log(`relist credit spent ${fmt(before - BigInt(await view(VAULT, "get_balance", { account_id: who })))}`);
   await verifyRhea(tokenId, res.listing);
+}
+
+// 2-token batch with Rhea listing; one ticker sorts before wrap.testnet (token = X), one after (Y).
+if (steps.has("rheabatch")) {
+  const ideas = [idea(`ar${stamp}`, `Alpha Rhea ${stamp}`), idea(`zr${stamp}`, `Zeta Rhea ${stamp}`)];
+  const q = await api("/api/quote", { ideas, listOn: "rhea" });
+  console.log("rhea batch quote total", fmt(q.total));
+  const credit = BigInt(await view(VAULT, "get_balance", { account_id: who }));
+  const need = BigInt(q.total) + NEAR / 100n;
+  if (credit < need) {
+    const r = await acct.callFunctionRaw({ contractId: VAULT, methodName: "deposit_credits", args: {}, deposit: need - credit, gas: 30n * 10n ** 12n });
+    console.log(`topped up credit by ${fmt(need - credit)}: ${EXPLORER}${r.transaction.hash}`);
+  }
+  const before = BigInt(await view(VAULT, "get_balance", { account_id: who }));
+  const t0 = Date.now();
+  const res = await api("/api/launch/batch", { ideas, listOn: "rhea" });
+  console.log(`rhea batch ${((Date.now() - t0) / 1000).toFixed(1)}s, credit spent ${fmt(before - BigInt(await view(VAULT, "get_balance", { account_id: who })))}; launch tx ${res.explorerUrl}`);
+  for (const r of res.results) {
+    console.log(`- ${r.ticker} ok=${r.ok} ${r.tokenId}`);
+    if (r.ok) await verifyRhea(r.tokenId, r.listing);
+  }
 }
 
 async function nearly(n: number) {

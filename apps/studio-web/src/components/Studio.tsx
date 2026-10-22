@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type LaunchedToken, type LaunchIdea, type QuoteResponse, type SessionResponse } from "@osl/schema";
 import "@near-wallet-selector/modal-ui/styles.css";
-import { initWallet, depositCredits, signCallsInChunks, signOut, takeRedirectedNearly } from "../lib/wallet";
+import { initWallet, depositCredits, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
+import { viewCall } from "../lib/near";
 import { getVaultBalance } from "../lib/near";
-import { appLocked, generate, launchBatch, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
+import { appLocked, generate, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
 import { EXPLORER_BASE } from "../lib/config";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { WaitlistForm } from "./WaitlistForm";
 import Admin from "./Admin";
 import { VAULT_CONTRACT } from "../lib/config";
 
-type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings";
+type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist";
 
 export default function Studio() {
   const [account, setAccount] = useState<string | null>(null);
@@ -151,6 +152,36 @@ export default function Studio() {
     if (!done.length) return;
     nearlyFinalize(done, session.token)
       .then((r) => setResult({ txHash: done[0].txHash, explorerUrl: `${EXPLORER_BASE}/txns/${done[0].txHash}`, results: r.results }))
+      .then(() => loadLaunches())
+      .catch((e) => setError((e as Error).message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.token]);
+
+  // Re-list an existing token on Rhea: wallet sends it to the vault, then the API lists it.
+  const relist = (tokenId: string) =>
+    run("relist", async () => {
+      const token = await authToken(account!);
+      if (!token) return;
+      const bal = await viewCall<string>(tokenId, "ft_balance_of", { account_id: account });
+      if (!bal || BigInt(bal) === 0n) throw new Error("you hold none of this token");
+      setProgress("Confirm in your wallet: send the tokens to the vault for listing…");
+      try {
+        if (!(await sendForRelist(tokenId, bal))) return;
+        setProgress("Listing on Rhea…");
+        const r = await listOnRhea(tokenId, token, rheaOpts);
+        if (!r.listing.ok) throw new Error(r.listing.error ?? "listing failed; tokens were returned to your wallet");
+      } finally {
+        setProgress(null);
+      }
+      await refresh();
+      await loadLaunches();
+    });
+
+  useEffect(() => {
+    if (!session?.token) return;
+    const t = takeRedirectedRelist();
+    if (!t) return;
+    listOnRhea(t, session.token, rheaOpts)
       .then(() => loadLaunches())
       .catch((e) => setError((e as Error).message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -365,6 +396,11 @@ export default function Studio() {
                         {l.venue === "rhea" ? "Rhea ↗" : "Nearly ↗"}
                       </a>
                     )}
+                    {l.ownerId === account && (l.venue ?? "yeetpad") === "yeetpad" && (
+                      <button className="link" disabled={busy !== null} title="Send your tokens to the vault and list them on Rhea (you get the LP position)" onClick={() => relist(l.tokenId)}>
+                        {busy === "relist" ? "listing…" : "list on Rhea"}
+                      </button>
+                    )}
                     {l.ownerId === account && (
                       <button className="link" onClick={() => setOpenSettings(openSettings === l.ticker ? null : l.ticker)}>
                         settings
@@ -391,6 +427,7 @@ export default function Studio() {
             ))}
           </ul>
         )}
+        {busy === "relist" && progress && <p className="muted small">{progress}</p>}
       </section>
       </aside>
 

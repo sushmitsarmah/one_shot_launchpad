@@ -85,6 +85,13 @@ describe("venues (mock mode)", () => {
     expect(l.launches[0].venue).toBe("rhea");
   });
 
+  test("re-list on Rhea: rejects non-Yeetpad tokens and tokens the vault isn't holding", async () => {
+    const t = await token("gina.testnet");
+    expect((await post("/api/list/rhea", { tokenId: "usdc.fakes.testnet" }, t)).status).toBe(400);
+    const { config } = await import("./config");
+    expect((await post("/api/list/rhea", { tokenId: `moon.${config.factoryContract}` }, t)).status).toBe(409);
+  });
+
   test("nearly prepare builds launch calls with a site link and icon", async () => {
     const t = await token("erin.testnet");
     const ideas = [{ ...(await idea(t)), ticker: "nrly1" }];

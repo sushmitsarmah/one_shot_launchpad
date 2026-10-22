@@ -60,6 +60,9 @@ export async function venueStatus(): Promise<{ nearly: { enabled: boolean; reaso
 export const quote = (ideas: LaunchIdea[], listOn: ListOnChoice, token: string, rhea?: RheaOptions) =>
   post<QuoteResponse>("/api/quote", { ideas, listOn, ...(listOn === "rhea" ? { rhea } : {}) }, token);
 
+export const listOnRhea = (tokenId: string, token: string, rhea?: RheaOptions) =>
+  post<{ listing: import("@osl/schema").Listing }>("/api/list/rhea", { tokenId, ...(rhea ? { rhea } : {}) }, token);
+
 export const nearlyPrepare = (ideas: LaunchIdea[], token: string) => post<NearlyPrepareResponse>("/api/nearly/prepare", { ideas }, token);
 
 export const nearlyFinalize = (items: { ticker: string; txHash: string }[], token: string) =>
