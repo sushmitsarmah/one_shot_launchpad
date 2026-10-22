@@ -28,6 +28,7 @@
         "@near-js/transactions": "^2.3.0",
         "@near-wallet-selector/core": "^10.1.4",
         "@near-wallet-selector/here-wallet": "^10.1.4",
+        "@near-wallet-selector/intear-wallet": "^10.1.4",
         "@near-wallet-selector/meteor-wallet": "^10.1.4",
         "@near-wallet-selector/modal-ui": "^10.1.4",
         "@near-wallet-selector/my-near-wallet": "^10.1.4",
@@ -222,11 +223,15 @@
 
     "@near-wallet-selector/here-wallet": ["@near-wallet-selector/here-wallet@10.1.4", "", { "dependencies": { "@here-wallet/core": "3.4.0", "@near-wallet-selector/core": "10.1.4" } }, "sha512-ppXegYBXuz2Dggt50IayuuM1S6QsDEIrxqICyXtkCRYu18ZdP1Aaail9KPq10LRfXG4xDsg1JsI7nIPky8dHIQ=="],
 
+    "@near-wallet-selector/intear-wallet": ["@near-wallet-selector/intear-wallet@10.1.4", "", { "dependencies": { "@near-js/crypto": "^2.3.0", "@near-js/keystores": "^2.3.0", "@near-js/providers": "^2.3.0", "@near-js/transactions": "^2.3.0", "@near-js/types": "^2.3.0", "@near-js/utils": "^2.3.0", "@near-wallet-selector/core": "10.1.4", "@near-wallet-selector/wallet-utils": "10.1.4", "js-sha256": "^0.9.0" } }, "sha512-E0Z0IRoSbgz2K4mYOQPmjBN0XSPz6BYHI1tb9APcU7XKUnddu9knzuq9BN6fYp8hykC49DN2ns2aJKB8sQcNMw=="],
+
     "@near-wallet-selector/meteor-wallet": ["@near-wallet-selector/meteor-wallet@10.1.4", "", { "dependencies": { "@meteorwallet/sdk": "1.0.24", "@near-js/keystores-browser": "2.3.0", "@near-wallet-selector/core": "10.1.4" } }, "sha512-J718J/yiQbGpDYlOiGYyMNUQBs29xuOa3NoX2u4wICetNirzEuIOHyxS6XRbk5q0a0xq0mkVw02rmFwxv6DWtA=="],
 
     "@near-wallet-selector/modal-ui": ["@near-wallet-selector/modal-ui@10.1.4", "", { "dependencies": { "@near-wallet-selector/core": "10.1.4", "copy-to-clipboard": "3.3.3", "qrcode": "1.5.4", "react": "18.3.1", "react-dom": "18.3.1" } }, "sha512-4MbNHyKpHNYQuOuKkNcAcaaKT1hkOvWzSlqjOWyJVBTW0b3+WRG5EWB0JpXx4GFPNEBLvLQEmEcitPPyYhHHzA=="],
 
     "@near-wallet-selector/my-near-wallet": ["@near-wallet-selector/my-near-wallet@10.1.4", "", { "dependencies": { "@near-js/accounts": "^2.3.0", "@near-js/crypto": "^2.3.0", "@near-js/providers": "^2.3.0", "@near-js/transactions": "^2.3.0", "@near-js/utils": "^2.3.0", "@near-wallet-selector/core": "10.1.4", "borsh": "2.0.0" } }, "sha512-4kwi9PkMSjKouRsq/JawDFNaXQD324knDumm9kvcuFTL3gG3OWK6qaiUDs9ecCILg1Jh6AEGfkoSwQ2tMJyNTQ=="],
+
+    "@near-wallet-selector/wallet-utils": ["@near-wallet-selector/wallet-utils@10.1.4", "", { "dependencies": { "@near-js/crypto": "^2.3.0", "@near-js/providers": "^2.3.0", "@near-js/signers": "^2.3.0", "@near-js/transactions": "^2.3.0", "@near-js/types": "^2.3.0", "@near-js/utils": "^2.3.0", "@near-wallet-selector/core": "10.1.4", "js-sha256": "^0.9.0" } }, "sha512-mgFHtMMVv7r8L315WyrazZ13VFQUYtFlM0ZhnK16yxrZnsNP42y3xPTpQavt6euLKmjcDC+beXWWZGTHDEPX4A=="],
 
     "@noble/ciphers": ["@noble/ciphers@2.2.0", "", {}, "sha512-Z6pjIZ/8IJcCGzb2S/0Px5J81yij85xASuk1teLNeg75bfT07MV3a/O2Mtn1I2se43k3lkVEcFaR10N4cgQcZA=="],
 

@@ -3,6 +3,7 @@ import { setupModal, type WalletSelectorModal } from "@near-wallet-selector/moda
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { setupMeteorWallet } from "@near-wallet-selector/meteor-wallet";
 import { setupHereWallet } from "@near-wallet-selector/here-wallet";
+import { setupIntearWallet } from "@near-wallet-selector/intear-wallet";
 import { actionCreators } from "@near-js/transactions";
 import { NETWORK, VAULT_CONTRACT } from "./config";
 
@@ -10,14 +11,28 @@ let ready: Promise<{ selector: WalletSelector; modal: WalletSelectorModal }> | n
 
 export function initWallet() {
   ready ??= (async () => {
+    // One module list for both networks (PUBLIC_NETWORK picks testnet/mainnet). Intear Wallet
+    // (wallet.intear.tech) is popup-based: signMessage + signAndSendTransactions return inline, no redirect.
     const selector = await setupWalletSelector({
       network: NETWORK,
-      modules: [setupMyNearWallet(), setupMeteorWallet(), setupHereWallet()],
+      modules: [setupMyNearWallet(), setupMeteorWallet(), setupHereWallet(), setupIntearWallet()],
     });
     const modal = setupModal(selector, { contractId: VAULT_CONTRACT });
     return { selector, modal };
   })();
   return ready;
+}
+
+/**
+ * Popup wallets (Intear, MyNearWallet popup) surface raw errors like "Popup was blocked" / "Popup closed";
+ * turn those into something a user can act on. Other errors pass through unchanged.
+ */
+export function friendlyWalletError(e: unknown): Error {
+  const err = e instanceof Error ? e : new Error(String(e));
+  if (/popup was blocked/i.test(err.message))
+    return new Error("Your browser blocked the wallet popup. Allow popups for this site, then click again.");
+  if (/^popup closed$/i.test(err.message.trim())) return new Error("The wallet window was closed before you approved. Nothing was signed; try again.");
+  return err;
 }
 
 /** Calls `deposit_credits` on the vault with `yocto` attached. */

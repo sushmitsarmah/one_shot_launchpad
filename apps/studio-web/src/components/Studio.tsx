@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type LaunchedToken, type LaunchIdea, type QuoteResponse, type SessionResponse } from "@osl/schema";
 import "@near-wallet-selector/modal-ui/styles.css";
-import { initWallet, depositCredits, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
+import { initWallet, depositCredits, friendlyWalletError, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
 import { viewCall } from "../lib/near";
 import { getVaultBalance } from "../lib/near";
 import { appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
@@ -227,7 +227,7 @@ export default function Studio() {
         setNotWhitelisted(true);
         return;
       }
-      setError((e as Error).message ?? String(e));
+      setError(friendlyWalletError(e).message);
     } finally {
       setBusy(null);
     }
