@@ -4,7 +4,8 @@ import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
 import { viewCall } from "../lib/near";
 import { getVaultBalance } from "../lib/near";
-import { appLocked, generate, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
+import { appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
+import { webpIcons } from "../lib/icon";
 import { EXPLORER_BASE } from "../lib/config";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { WaitlistForm } from "./WaitlistForm";
@@ -39,9 +40,13 @@ export default function Studio() {
   const [qErr, setQErr] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [nearlyOff, setNearlyOff] = useState<string | null>(null);
+  const [justhootOff, setJusthootOff] = useState<string | null>("mainnet only, enabled at mainnet launch");
   useEffect(() => {
-    venueStatus().then((v) => setNearlyOff(v.nearly.enabled ? null : v.nearly.reason));
-  }, []);
+    venueStatus(account).then((v) => {
+      setNearlyOff(v.nearly.enabled ? null : v.nearly.reason);
+      setJusthootOff(v.justhoot.enabled ? null : v.justhoot.reason);
+    });
+  }, [account]);
   const [tab, setTab] = useState<"studio" | "admin">(() => (typeof location !== "undefined" && location.hash === "#admin" ? "admin" : "studio"));
   const openTab = (t: "studio" | "admin") => {
     setTab(t);
@@ -133,8 +138,10 @@ export default function Studio() {
   useEffect(() => {
     if (!session?.token || chosen.length === 0) return setQ(null);
     let stop = false;
-    const t = setTimeout(() => {
-      quote(chosen, listOn, session.token, rheaOpts)
+    const t = setTimeout(async () => {
+      const icons = listOn === "justhoot" ? await webpIcons(chosen) : undefined;
+      if (stop) return;
+      quote(chosen, listOn, session.token, rheaOpts, icons)
         .then((r) => !stop && (setQ(r), setQErr(null)))
         .catch((e) => !stop && (setQ(null), setQErr((e as Error).message)));
     }, 300);
@@ -148,9 +155,9 @@ export default function Studio() {
   // Redirect wallets come back with ?transactionHashes=; finish those Nearly launches.
   useEffect(() => {
     if (!session?.token) return;
-    const done = takeRedirectedNearly();
+    const { venue, items: done } = takeRedirectedNearly();
     if (!done.length) return;
-    nearlyFinalize(done, session.token)
+    (venue === "justhoot" ? justhootFinalize : nearlyFinalize)(done, session.token)
       .then((r) => setResult({ txHash: done[0].txHash, explorerUrl: `${EXPLORER_BASE}/txns/${done[0].txHash}`, results: r.results }))
       .then(() => loadLaunches())
       .catch((e) => setError((e as Error).message));
@@ -195,6 +202,17 @@ export default function Studio() {
     setProgress("Recording your tokens…");
     const r = await nearlyFinalize(signed, token);
     setResult({ txHash: signed[0].txHash, explorerUrl: `${EXPLORER_BASE}/txns/${signed[0].txHash}`, results: r.results });
+  };
+
+  // JustHoot: same wallet-signed flow; the browser makes a <=7000-char webp icon (API falls back to SVG / none).
+  const launchJusthoot = async (token: string) => {
+    const prep = await justhootPrepare(chosen, await webpIcons(chosen), token);
+    setProgress(`Sign ${prep.txs.length} JustHoot launch${prep.txs.length > 1 ? "es" : ""} in your wallet…`);
+    const signed = await signCallsInChunks(prep.txs, prep.chunk, (n) => setProgress(`Signed ${n}/${prep.txs.length}…`), "justhoot");
+    if (!signed.length) throw new Error("the wallet returned no transactions");
+    setProgress("Recording your tokens…");
+    const r = await justhootFinalize(signed, token);
+    setResult({ txHash: signed[0].txHash, explorerUrl: `https://nearblocks.io/txns/${signed[0].txHash}`, results: r.results });
   };
 
   const run = async (kind: Busy, fn: () => Promise<void>) => {
@@ -393,7 +411,7 @@ export default function Studio() {
                     <a href={l.explorerUrl} target="_blank" rel="noreferrer">explorer ↗</a>
                     {l.venue && l.venue !== "yeetpad" && l.venueUrl && (
                       <a href={l.venueUrl} target="_blank" rel="noreferrer">
-                        {l.venue === "rhea" ? "Rhea ↗" : "Nearly ↗"}
+                        {l.venue === "rhea" ? "Rhea ↗" : l.venue === "justhoot" ? "JustHoot ↗" : "Nearly ↗"}
                       </a>
                     )}
                     {l.ownerId === account && (l.venue ?? "yeetpad") === "yeetpad" && (
@@ -507,22 +525,30 @@ export default function Studio() {
                 ["none", "None", "Token only"],
                 ["rhea", "Rhea (direct)", "Our token + Rhea DCL pool"],
                 ["nearly", "Nearly", "Nearly's token + pool"],
+                ["justhoot", "JustHoot", "JustHoot's token + Rhea pool"],
               ] as const
-            ).map(([v, label, hint]) => (
+            ).map(([v, label, hint]) => {
+              const off = v === "nearly" ? nearlyOff : v === "justhoot" ? justhootOff : null;
+              return (
               <button
                 key={v}
                 role="radio"
                 aria-checked={listOn === v}
                 className={listOn === v ? "on" : ""}
-                disabled={v === "nearly" && nearlyOff !== null}
+                disabled={off !== null}
                 onClick={() => setListOn(v)}
-                title={v === "nearly" && nearlyOff ? nearlyOff : hint}
+                title={off ?? hint}
               >
                 {label}
               </button>
-            ))}
+              );
+            })}
           </div>
-          {nearlyOff && <p className="muted small">Nearly: {nearlyOff}</p>}
+          {(nearlyOff || justhootOff) && (
+            <p className="muted small">
+              {[nearlyOff && `Nearly: ${nearlyOff}`, justhootOff && `JustHoot: ${justhootOff}`].filter(Boolean).join(" · ")}
+            </p>
+          )}
           <p className="muted small">
             {listOn === "none" && (
               <>Creates {chosen.length === 1 ? "a NEP-141 token" : `${chosen.length} NEP-141 tokens in one transaction`} owned by you, paid from your vault credit (a failed item is refunded).</>
@@ -537,6 +563,13 @@ export default function Studio() {
               <>
                 Nearly's factory creates and lists the token; your wallet signs and pays each launch ({chosen.length > 1 ? "batched in one wallet prompt" : "one prompt"}).
                 Nearly locks the LP in its own locker and takes its trading fees.
+              </>
+            )}
+            {listOn === "justhoot" && (
+              <>
+                JustHoot creates the token and its Rhea pool; your wallet signs and pays the exact launch deposit ({chosen.length > 1 ? `batched, up to 10 per wallet prompt` : "one prompt"}).
+                JustHoot's pool creator holds the LP; you're the token's fee recipient. Tickers up to 10 characters. Description and socials appear on your
+                Yeetpad site page (linked on-chain as the token's reference), not in JustHoot's socials form.
               </>
             )}{" "}
             Each gets a site at <code>/t/&lt;token-name&gt;</code>.
@@ -583,6 +616,7 @@ export default function Studio() {
                 setProgress(listOn === "rhea" ? "Launching and listing on Rhea (about 10 s per token)…" : null);
                 try {
                   if (listOn === "nearly") await launchNearly(token);
+                  else if (listOn === "justhoot") await launchJusthoot(token);
                   else setResult(await launchBatch(account, chosen, token, listOn, rheaOpts));
                 } finally {
                   setProgress(null);
@@ -594,7 +628,7 @@ export default function Studio() {
           >
             {busy === "launch"
               ? "Launching…"
-              : `${chosen.length > 1 ? `Launch ${chosen.length} tokens` : "Launch token"}${listOn === "rhea" ? " + list on Rhea" : listOn === "nearly" ? " on Nearly" : ""}`}
+              : `${chosen.length > 1 ? `Launch ${chosen.length} tokens` : "Launch token"}${listOn === "rhea" ? " + list on Rhea" : listOn === "nearly" ? " on Nearly" : listOn === "justhoot" ? " on JustHoot" : ""}`}
           </button>
           {progress && <p className="muted small">{progress}</p>}
           {result && (
@@ -612,7 +646,7 @@ export default function Studio() {
                             ·{" "}
                             {r.listing.ok && r.listing.url ? (
                               <a href={r.listing.url} target="_blank" rel="noreferrer">
-                                {r.listing.venue === "rhea" ? "Rhea pool ↗" : "Nearly ↗"}
+                                {r.listing.venue === "rhea" ? "Rhea pool ↗" : r.listing.venue === "justhoot" ? "JustHoot ↗" : "Nearly ↗"}
                               </a>
                             ) : (
                               <span className="muted">{r.listing.error}</span>

@@ -66,6 +66,18 @@ export function buildConfig(src: EnvSource = {}) {
       "NEARLY_DISABLED_REASON",
       "Nearly's testnet factory fails at add_liquidity right now (Rhea testnet DCL rejects its Deposit); enabled on mainnet.",
     ) as string,
+    // JustHoot (mainnet only): the creator's wallet calls `launch_meme`. Off until mainnet launch.
+    justhootEnabled: flag("JUSTHOOT_ENABLED"),
+    justhootFactory: env("JUSTHOOT_FACTORY", "v2-launchpad.justhoot.near") as string,
+    /** JustHoot views/tx lookups go here (mainnet), independent of NEAR_RPC_URL. */
+    justhootRpcUrl: env("JUSTHOOT_RPC_URL", "https://rpc.mainnet.fastnear.com") as string,
+    justhootUrlBase: env("JUSTHOOT_URL_BASE", "https://justhoot.fun/p/") as string,
+    justhootBatchChunk: Number(env("JUSTHOOT_BATCH_CHUNK", "10")),
+    /** Fill launch_meme's `reference` with our own metadata JSON (served by this API). JUSTHOOT_REFERENCE=0 sends null. */
+    justhootReference: !["0", "false", "no", "off"].includes((env("JUSTHOOT_REFERENCE", "1") as string).toLowerCase()),
+    justhootDisabledReason: env("JUSTHOOT_DISABLED_REASON", "mainnet only, enabled at mainnet launch") as string,
+    /** Public base URL of this API (used for JustHoot's `reference` link). */
+    publicApiBase: (env("PUBLIC_API_BASE", "https://one-shot-launchpad-api.sushmitsarmah.workers.dev") as string).replace(/\/$/, ""),
 
     // Auth: HMAC secret for session tokens (wrangler secret / .env). NEP-413 recipient defaults to the vault id.
     sessionSecret: env("SESSION_SECRET"),

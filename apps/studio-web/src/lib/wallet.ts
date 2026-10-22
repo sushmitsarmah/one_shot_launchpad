@@ -46,13 +46,14 @@ export const NEARLY_PENDING = "yeetpad.nearlyPending";
  * Redirect wallets (MyNearWallet) leave the page: the tickers are kept in localStorage and the
  * hashes come back in `?transactionHashes=` (see takeRedirectedNearly).
  */
-export async function signCallsInChunks(calls: PreparedCall[], chunk: number, onChunk?: (done: number) => void) {
+export type WalletVenue = "nearly" | "justhoot";
+export async function signCallsInChunks(calls: PreparedCall[], chunk: number, onChunk?: (done: number) => void, venue: WalletVenue = "nearly") {
   const { selector } = await initWallet();
   const wallet = await selector.wallet();
   const out: { ticker: string; txHash: string }[] = [];
   for (let i = 0; i < calls.length; i += chunk) {
     const part = calls.slice(i, i + chunk);
-    localStorage.setItem(NEARLY_PENDING, JSON.stringify(part.map((c) => c.ticker)));
+    localStorage.setItem(NEARLY_PENDING, JSON.stringify({ venue, tickers: part.map((c) => c.ticker) }));
     const res = await wallet.signAndSendTransactions({
       transactions: part.map((c) => ({
         receiverId: c.receiverId,
@@ -68,15 +69,17 @@ export async function signCallsInChunks(calls: PreparedCall[], chunk: number, on
 }
 
 /** After a redirect wallet returns: pairs pending tickers with `transactionHashes` (same order). */
-export function takeRedirectedNearly(): { ticker: string; txHash: string }[] {
-  const pending = JSON.parse(localStorage.getItem(NEARLY_PENDING) ?? "[]") as string[];
+export function takeRedirectedNearly(): { venue: WalletVenue; items: { ticker: string; txHash: string }[] } {
+  const raw = JSON.parse(localStorage.getItem(NEARLY_PENDING) ?? "[]") as string[] | { venue: WalletVenue; tickers: string[] };
+  const venue: WalletVenue = Array.isArray(raw) ? "nearly" : raw.venue;
+  const pending = Array.isArray(raw) ? raw : raw.tickers;
   const u = new URL(location.href);
   const hashes = (u.searchParams.get("transactionHashes") ?? "").split(",").filter(Boolean);
-  if (!pending.length || !hashes.length) return [];
+  if (!pending.length || !hashes.length) return { venue, items: [] };
   localStorage.removeItem(NEARLY_PENDING);
   u.searchParams.delete("transactionHashes");
   history.replaceState(null, "", u.toString());
-  return pending.slice(0, hashes.length).map((ticker, i) => ({ ticker, txHash: hashes[i] }));
+  return { venue, items: pending.slice(0, hashes.length).map((ticker, i) => ({ ticker, txHash: hashes[i] })) };
 }
 
 export const RELIST_PENDING = "yeetpad.relistPending";

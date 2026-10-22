@@ -86,8 +86,8 @@ export const GenerateResponse = z.object({
 export type GenerateResponse = z.infer<typeof GenerateResponse>;
 
 /** Where a launch is listed. none = our factory token only; rhea = our token + Rhea DCL pool (vault);
- *  nearly = Nearly's factory creates the token, signed by the creator's wallet. */
-export const ListOn = z.enum(["none", "rhea", "nearly"]);
+ *  nearly / justhoot = that venue's factory creates the token, signed by the creator's wallet. */
+export const ListOn = z.enum(["none", "rhea", "nearly", "justhoot"]);
 export type ListOn = z.infer<typeof ListOn>;
 
 export const RheaOptions = z.object({
@@ -99,7 +99,7 @@ export const RheaOptions = z.object({
 export type RheaOptions = z.infer<typeof RheaOptions>;
 
 export const Listing = z.object({
-  venue: z.enum(["rhea", "nearly"]),
+  venue: z.enum(["rhea", "nearly", "justhoot"]),
   ok: z.boolean(),
   tokenId: z.string().nullable(),
   poolId: z.string().nullable(),
@@ -170,7 +170,7 @@ export const LaunchedToken = z.object({
   siteUrl: z.string().url(),
   explorerUrl: z.string().url(),
   /** Where it trades: our factory token (yeetpad), listed on Rhea, or a Nearly token. */
-  venue: z.enum(["yeetpad", "rhea", "nearly"]).optional(),
+  venue: z.enum(["yeetpad", "rhea", "nearly", "justhoot"]).optional(),
   venueUrl: z.string().url().nullable().optional(),
 });
 export type LaunchedToken = z.infer<typeof LaunchedToken>;
@@ -318,6 +318,8 @@ export const QuoteRequest = z.object({
   ideas: z.array(LaunchIdea).min(1).max(MAX_BATCH),
   listOn: ListOn,
   rhea: RheaOptions.optional(),
+  /** JustHoot: per-ticker browser-made icon, so the deposit quote matches what will be signed. */
+  icons: z.record(z.string(), z.string().max(20_000)).optional(),
 });
 export type QuoteRequest = z.infer<typeof QuoteRequest>;
 
@@ -343,7 +345,7 @@ export const NearlyLaunchTx = z.object({
   ticker: z.string(),
   slug: z.string(),
   receiverId: z.string(),
-  methodName: z.literal("launch"),
+  methodName: z.enum(["launch", "launch_meme"]),
   args: z.record(z.string(), z.unknown()),
   gas: z.string(),
   deposit: z.string(),
@@ -357,3 +359,18 @@ export const NearlyFinalizeRequest = z.object({
 });
 export const NearlyFinalizeResponse = z.object({ results: z.array(BatchLaunchItem) });
 export type NearlyFinalizeResponse = z.infer<typeof NearlyFinalizeResponse>;
+
+// ---------- JustHoot (same wallet-signed shape as Nearly) ----------
+export const JusthootPrepareRequest = z.object({
+  ideas: z.array(LaunchIdea).min(1).max(MAX_BATCH),
+  /** Optional per-ticker raster icon (data:image/webp, 128 px) made in the browser; must be <= 7000 chars. */
+  icons: z.record(z.string(), z.string().max(20_000)).optional(),
+});
+export type JusthootPrepareRequest = z.infer<typeof JusthootPrepareRequest>;
+export const JusthootPrepareResponse = NearlyPrepareResponse;
+export type JusthootPrepareResponse = NearlyPrepareResponse;
+export const JusthootFinalizeRequest = NearlyFinalizeRequest;
+export const JusthootFinalizeResponse = NearlyFinalizeResponse;
+export type JusthootFinalizeResponse = NearlyFinalizeResponse;
+
+export { tokenIconDataUri, tokenIconSvg } from "./icon";

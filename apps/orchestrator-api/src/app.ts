@@ -22,6 +22,10 @@ import {
   type LaunchResponse,
   type Listing,
   type RheaOptions,
+  JusthootFinalizeRequest,
+  JusthootPrepareRequest,
+  type JusthootFinalizeResponse,
+  type JusthootPrepareResponse,
   NearlyFinalizeRequest,
   NearlyPrepareRequest,
   QuoteRequest,
@@ -34,6 +38,19 @@ import { buildListParams, computePoints, listingCost, poolIdFor, rheaPoolUrl } f
 import { config } from "./config";
 import { generateIdeas } from "./llm";
 import { tokenIconDataUri } from "./icon";
+import {
+  accountExists,
+  buildLaunchArgs,
+  fitIcon,
+  justhootLaunchesInTx,
+  justhootProblem,
+  justhootStatus,
+  justhootTokenId,
+  justhootUrl,
+  quoteJusthoot,
+  referenceJson,
+  sha256Base64,
+} from "./justhoot";
 import { buildSiteConfig, claimSlug, compactSite, findSite, getSite, getViews, kvStore, putSite, saveSite, siteStoreKind, siteUrl } from "./sites";
 import {
   WAITLIST_MAX_BODY,
@@ -119,6 +136,8 @@ app.get("/api/health", (c) =>
     venues: {
       rhea: { dcl: config.dclContract, wnear: config.wnearContract, defaultFdvNear: config.rheaDefaultFdvNear },
       nearly: { factory: config.nearlyFactory, chunk: config.nearlyBatchChunk, enabled: config.nearlyEnabled, reason: config.nearlyEnabled ? null : config.nearlyDisabledReason },
+      // Flag only (no RPC); /api/justhoot/status adds is_public_launch.
+      justhoot: { factory: config.justhootFactory, chunk: config.justhootBatchChunk, enabled: config.justhootEnabled, reason: config.justhootEnabled ? null : config.justhootDisabledReason },
     },
     siteStore: siteStoreKind(),
     siteBase: config.siteBase,
@@ -378,7 +397,24 @@ app.post("/api/quote", requireSession, async (c) => {
   const items: QuoteResponse["items"] = [];
   let total = 0n;
   let rheaInfo: QuoteResponse["rhea"];
-  if (listOn === "nearly") {
+  if (listOn === "justhoot") {
+    const st = await justhootStatus(c.var.account);
+    if (!st.enabled) return c.json({ error: st.reason, code: "venue_disabled" }, 503);
+    for (const idea of ideas) {
+      const bad = justhootProblem(idea);
+      if (bad) return c.json({ error: bad }, 400);
+      const website = siteUrl(await claimSlug(idea.name, idea.ticker));
+      const icon = fitIcon([body.data.icons?.[idea.ticker], tokenIconDataUri(idea)]);
+      const ref = config.justhootReference ? { url: justhootRefUrl(idea.ticker), hash: await sha256Base64(referenceJson(idea, website)) } : null;
+      const q = await quoteJusthoot(buildLaunchArgs(idea, icon, ref), c.var.account);
+      total += BigInt(q.deposit);
+      items.push({ ticker: idea.ticker, total: q.deposit, paidFrom: "wallet", parts: { launch_deposit: q.deposit, ...(icon ? {} : { no_icon: "0" }) } });
+    }
+    notes.push(
+      `JustHoot (${config.justhootFactory}) creates the token and its Rhea pool; your wallet signs and pays the exact get_launch_deposit (unused part refunded). JustHoot's pool creator holds the LP; you are the token's fee recipient.`,
+      `Description and socials show on your Yeetpad site page (${config.siteBase}/t/<slug>), linked as the token's on-chain reference; JustHoot's own socials form isn't used.`,
+    );
+  } else if (listOn === "nearly") {
     if (!config.nearlyEnabled) return c.json({ error: config.nearlyDisabledReason, code: "venue_disabled" }, 503);
     for (const idea of ideas) {
       const icon = tokenIconDataUri(idea);
@@ -503,15 +539,117 @@ app.post("/api/nearly/finalize", requireSession, requireAllowed, async (c) => {
     const base = buildSiteConfig(owner, p.idea, ev.token, { txHash, icon: p.icon });
     const site = await putSite({ ...base, slug: p.slug, tokenLaunch: { ...base.tokenLaunch, buyUrl: listing.url! } });
     await kv.put(`listing:${ticker}`, JSON.stringify(listing));
-    const idxKey = `nearly-by:${owner}`;
-    const idx = JSON.parse((await kv.get(idxKey)) ?? "[]") as { ticker: string; tokenId: string; at: number }[];
-    if (!idx.some((x) => x.tokenId === ev.token)) idx.unshift({ ticker, tokenId: ev.token, at: Date.now() });
-    await kv.put(idxKey, JSON.stringify(idx.slice(0, 500)));
+    await addVenueIndex(owner, "nearly", ticker, ev.token);
     await kv.delete?.(pendingKey(ticker));
     results.push({ ticker, ok: true, tokenId: ev.token, slug: site.slug ?? null, siteUrl: siteUrl(site.slug ?? ticker), error: null, listing });
   }
   return c.json({ results } satisfies NearlyFinalizeResponse, results.some((r) => r.ok) ? 200 : 400);
 });
+
+// ---------- JustHoot (creator's wallet signs launch_meme; mainnet only) ----------
+const jhPendingKey = (ticker: string) => `justhoot-pending:${ticker}`;
+const jhRefKey = (ticker: string) => `justhoot-ref:${ticker}`;
+const justhootRefUrl = (ticker: string) => `${config.publicApiBase}/api/justhoot/ref/${ticker}.json`;
+
+app.get("/api/justhoot/status", async (c) => {
+  const acct = NearAccountId.safeParse(c.req.query("account") ?? "");
+  return c.json({ factory: config.justhootFactory, chunk: config.justhootBatchChunk, ...(await justhootStatus(acct.success ? acct.data : null)) });
+});
+
+/** Token metadata JSON linked from launch_meme's `reference` (exact bytes that were hashed). */
+app.get("/api/justhoot/ref/:file", async (c) => {
+  const t = Ticker.safeParse(c.req.param("file").replace(/\.json$/, ""));
+  if (!t.success) return c.json({ error: "not found" }, 404);
+  const body = await kvStore().get(jhRefKey(t.data));
+  if (!body) return c.json({ error: "not found" }, 404);
+  return c.body(body, 200, { "content-type": "application/json", "cache-control": "public, max-age=3600", "access-control-allow-origin": "*" });
+});
+
+app.post("/api/justhoot/prepare", requireSession, requireAllowed, async (c) => {
+  const owner = c.var.account;
+  const st = await justhootStatus(owner);
+  if (!st.enabled) return c.json({ error: st.reason, code: "venue_disabled" }, 503);
+  const body = JusthootPrepareRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
+  const kv = kvStore();
+  const txs: NearlyLaunchTx[] = [];
+  let total = 0n;
+  for (const idea of body.data.ideas) {
+    const bad = justhootProblem(idea);
+    if (bad) return c.json({ error: bad }, 400);
+    const existing = await findSite(idea.ticker);
+    if ((existing && existing.site.ownerWallet !== owner) || (await isTickerTaken(idea.ticker))) {
+      return c.json({ error: `ticker "${idea.ticker}" is taken on Yeetpad; edit it and retry` }, 409);
+    }
+    const tokenId = justhootTokenId(idea.ticker);
+    if (await accountExists(tokenId)) return c.json({ error: `ticker "${idea.ticker}" is taken on JustHoot (${tokenId}); edit it and retry` }, 409);
+    const icon = fitIcon([body.data.icons?.[idea.ticker], tokenIconDataUri(idea)]);
+    const slug = await claimSlug(idea.name, idea.ticker);
+    await kv.put(`slug:${slug}`, idea.ticker);
+    let ref: { url: string; hash: string } | null = null;
+    if (config.justhootReference) {
+      const json = referenceJson(idea, siteUrl(slug));
+      await kv.put(jhRefKey(idea.ticker), json);
+      ref = { url: justhootRefUrl(idea.ticker), hash: await sha256Base64(json) };
+    }
+    const args = buildLaunchArgs(idea, icon, ref);
+    const q = await quoteJusthoot(args, owner);
+    await kv.put(jhPendingKey(idea.ticker), JSON.stringify({ owner, idea, icon: icon ?? tokenIconDataUri(idea), slug, tokenId, at: Date.now() }));
+    total += BigInt(q.deposit);
+    txs.push({ ticker: idea.ticker, slug, receiverId: config.justhootFactory, methodName: "launch_meme", args: { args }, gas: q.gas, deposit: q.deposit });
+  }
+  const res: JusthootPrepareResponse = { factory: config.justhootFactory, chunk: config.justhootBatchChunk, txs, total: total.toString() };
+  return c.json(res);
+});
+
+app.post("/api/justhoot/finalize", requireSession, requireAllowed, async (c) => {
+  const body = JusthootFinalizeRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid request", issues: body.error.issues }, 400);
+  const owner = c.var.account;
+  const kv = kvStore();
+  const results: JusthootFinalizeResponse["results"] = [];
+  const cache = new Map<string, Awaited<ReturnType<typeof justhootLaunchesInTx>>>();
+  for (const { ticker, txHash } of body.data.items) {
+    const fail = (error: string) => results.push({ ticker, ok: false, tokenId: null, slug: null, siteUrl: null, error, listing: null });
+    const raw = await kv.get(jhPendingKey(ticker));
+    if (!raw) {
+      fail("no pending JustHoot launch for this ticker (prepare first)");
+      continue;
+    }
+    const p = JSON.parse(raw) as { owner: string; idea: import("@osl/schema").LaunchIdea; icon: string; slug: string; tokenId: string };
+    if (p.owner !== owner) {
+      fail("prepared by another account");
+      continue;
+    }
+    let r = cache.get(txHash);
+    if (!r) {
+      r = await justhootLaunchesInTx(txHash, owner).catch((e) => ({ launched: [], failures: [`couldn't read the transaction (${(e as Error).message.slice(0, 80)})`] }));
+      cache.set(txHash, r);
+    }
+    const ev = r.launched.find((e) => e.creator_id === owner && e.token_id === p.tokenId);
+    if (!ev) {
+      fail(r.failures[0] ?? "no matching JustHoot launch in that transaction");
+      continue;
+    }
+    const listing: Listing = { venue: "justhoot", ok: true, tokenId: ev.token_id, poolId: `${ev.token_id}|wrap.near|10000`, lptId: null, url: justhootUrl(ev.token_id), txHash, error: null };
+    const base = buildSiteConfig(owner, p.idea, ev.token_id, { txHash, icon: p.icon });
+    const site = await putSite({ ...base, slug: p.slug, tokenLaunch: { ...base.tokenLaunch, buyUrl: listing.url! } });
+    await kv.put(`listing:${ticker}`, JSON.stringify(listing));
+    await addVenueIndex(owner, "justhoot", ticker, ev.token_id);
+    await kv.delete?.(jhPendingKey(ticker));
+    results.push({ ticker, ok: true, tokenId: ev.token_id, slug: site.slug ?? null, siteUrl: siteUrl(site.slug ?? ticker), error: null, listing });
+  }
+  return c.json({ results } satisfies JusthootFinalizeResponse, results.some((r) => r.ok) ? 200 : 400);
+});
+
+/** Tokens made by an outside venue's factory are indexed in KV (`<venue>-by:<owner>`) for My launches. */
+async function addVenueIndex(owner: string, venue: "nearly" | "justhoot", ticker: string, tokenId: string) {
+  const kv = kvStore();
+  const key = `${venue}-by:${owner}`;
+  const idx = JSON.parse((await kv.get(key)) ?? "[]") as { ticker: string; tokenId: string; at: number }[];
+  if (!idx.some((x) => x.tokenId === tokenId)) idx.unshift({ ticker, tokenId, at: Date.now() });
+  await kv.put(key, JSON.stringify(idx.slice(0, 500)));
+}
 
 // ---------- whitelist (waitlist) ----------
 /**
@@ -670,7 +808,10 @@ app.get("/api/launches/:account", async (c) => {
   const launches = await Promise.all(recs.map(toLaunched));
   // Nearly tokens live outside our factory; they come from the KV index (first page only).
   if (from === 0) {
-    const idx = JSON.parse((await kvStore().get(`nearly-by:${account.data}`)) ?? "[]") as { ticker: string; tokenId: string; at: number }[];
+    const idx = [
+      ...(JSON.parse((await kvStore().get(`nearly-by:${account.data}`)) ?? "[]") as { ticker: string; tokenId: string; at: number }[]).map((x) => ({ ...x, venue: "nearly" as const })),
+      ...(JSON.parse((await kvStore().get(`justhoot-by:${account.data}`)) ?? "[]") as { ticker: string; tokenId: string; at: number }[]).map((x) => ({ ...x, venue: "justhoot" as const })),
+    ];
     for (const n of idx) {
       const kv = await getSite(n.ticker);
       const l = await getListing(n.ticker);
@@ -686,9 +827,9 @@ app.get("/api/launches/:account", async (c) => {
         views: await getViews(n.ticker),
         gaId: kv?.analytics?.gaId ?? null,
         siteUrl: siteUrl(kv?.slug ?? n.ticker),
-        explorerUrl: `${config.explorerBase}/address/${n.tokenId}`,
-        venue: "nearly",
-        venueUrl: l?.url ?? nearlyUrl(n.tokenId),
+        explorerUrl: n.venue === "justhoot" ? `https://nearblocks.io/address/${n.tokenId}` : `${config.explorerBase}/address/${n.tokenId}`,
+        venue: n.venue,
+        venueUrl: l?.url ?? (n.venue === "justhoot" ? justhootUrl(n.tokenId) : nearlyUrl(n.tokenId)),
       });
     }
     launches.sort((a, b) => b.createdAt - a.createdAt);

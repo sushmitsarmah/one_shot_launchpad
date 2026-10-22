@@ -8,6 +8,8 @@ import type {
   LaunchIdea,
   LaunchResponse,
   MeResponse,
+  JusthootFinalizeResponse,
+  JusthootPrepareResponse,
   NearlyFinalizeResponse,
   NearlyPrepareResponse,
   QuoteResponse,
@@ -47,18 +49,26 @@ async function post<T>(path: string, body: unknown, token: string): Promise<T> {
 export const generate = (prompt: string, ownerWallet: string, token: string, count = 1) =>
   post<GenerateResponse>("/api/generate", { prompt, ownerWallet, count }, token);
 
-export type ListOnChoice = "none" | "rhea" | "nearly";
+export type ListOnChoice = "none" | "rhea" | "nearly" | "justhoot";
 
 export const launchBatch = (ownerWallet: string, ideas: LaunchIdea[], token: string, listOn: "none" | "rhea" = "none", rhea?: RheaOptions) =>
   post<BatchLaunchResponse>("/api/launch/batch", { ownerWallet, ideas, listOn, ...(listOn === "rhea" ? { rhea } : {}) }, token);
 
-export async function venueStatus(): Promise<{ nearly: { enabled: boolean; reason: string | null } }> {
-  const j = await get<{ venues?: { nearly?: { enabled?: boolean; reason?: string | null } } }>("/api/health").catch(() => ({}) as never);
-  return { nearly: { enabled: j?.venues?.nearly?.enabled === true, reason: j?.venues?.nearly?.reason ?? "Nearly is not available" } };
+type VenueFlag = { enabled: boolean; reason: string | null };
+export async function venueStatus(account?: string | null): Promise<{ nearly: VenueFlag; justhoot: VenueFlag }> {
+  type H = { enabled?: boolean; reason?: string | null };
+  const j = await get<{ venues?: { nearly?: H; justhoot?: H } }>("/api/health").catch(() => ({}) as never);
+  const nearly = { enabled: j?.venues?.nearly?.enabled === true, reason: j?.venues?.nearly?.reason ?? "Nearly is not available" };
+  let justhoot: VenueFlag = { enabled: false, reason: j?.venues?.justhoot?.reason ?? "mainnet only, enabled at mainnet launch" };
+  // Flag on: ask the launcher too (is_public_launch / whitelisted creator).
+  if (j?.venues?.justhoot?.enabled) {
+    justhoot = await get<VenueFlag>(`/api/justhoot/status${account ? `?account=${encodeURIComponent(account)}` : ""}`).catch(() => ({ enabled: false, reason: "JustHoot status unavailable" }));
+  }
+  return { nearly, justhoot };
 }
 
-export const quote = (ideas: LaunchIdea[], listOn: ListOnChoice, token: string, rhea?: RheaOptions) =>
-  post<QuoteResponse>("/api/quote", { ideas, listOn, ...(listOn === "rhea" ? { rhea } : {}) }, token);
+export const quote = (ideas: LaunchIdea[], listOn: ListOnChoice, token: string, rhea?: RheaOptions, icons?: Record<string, string>) =>
+  post<QuoteResponse>("/api/quote", { ideas, listOn, ...(listOn === "rhea" ? { rhea } : {}), ...(icons ? { icons } : {}) }, token);
 
 export const listOnRhea = (tokenId: string, token: string, rhea?: RheaOptions) =>
   post<{ listing: import("@osl/schema").Listing }>("/api/list/rhea", { tokenId, ...(rhea ? { rhea } : {}) }, token);
@@ -127,3 +137,9 @@ export const adminWaitlist = (token: string) =>
 export const adminAllowed = (token: string) => authed<{ allowed: AdminAllowedItem[]; truncated: boolean }>("GET", "/api/admin/allowed", token);
 export const adminAction = (action: "approve" | "revoke" | "remove", accounts: string[], token: string) =>
   authed<{ results: AdminResult[] }>("POST", `/api/admin/${action}`, token, { accounts });
+
+export const justhootPrepare = (ideas: LaunchIdea[], icons: Record<string, string>, token: string) =>
+  post<JusthootPrepareResponse>("/api/justhoot/prepare", { ideas, icons }, token);
+
+export const justhootFinalize = (items: { ticker: string; txHash: string }[], token: string) =>
+  post<JusthootFinalizeResponse>("/api/justhoot/finalize", { items }, token);
