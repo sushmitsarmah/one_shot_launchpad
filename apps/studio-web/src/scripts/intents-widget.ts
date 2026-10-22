@@ -57,7 +57,7 @@ export function mountIntents(host: HTMLElement, ctx: IntentsCtx) {
   const quoteBox = h("div", { cls: "tki-quote", hidden: true });
   const depositBox = h("div", { cls: "tki-deposit", hidden: true });
   const step2 = h("div", { cls: "tki-step2", hidden: true });
-  const foot = h("p", { cls: "tki-foot" }, "Powered by ", h("a", { href: "https://near-intents.org", target: "_blank", rel: "noreferrer", textContent: "NEAR Intents" }), " · 1Click API. No Yeetpad fee; 1Click's own fee is in the quote.");
+  const foot = h("p", { cls: "tki-foot" }, "Powered by ", h("a", { href: "https://near-intents.org", target: "_blank", rel: "noreferrer", textContent: "NEAR Intents" }), " (1Click API). This page adds no fee; 1Click's fee is already in the quote.");
 
   const card = h(
     "div",

@@ -69,3 +69,4 @@
 .tki-foot { margin: 0; font-size: 0.8rem; color: var(--ink-soft); }
 .tki-foot a { color: inherit; font-weight: 700; }
 @media (max-width: 560px) { .tki-actions .btn { width: 100%; } }
+.tk-intents [hidden] { display: none !important; }
