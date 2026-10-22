@@ -58,8 +58,10 @@ out.totals = await evalJs(`document.querySelector('.tokens-dash .admin-stats')?.
 out.hash = await evalJs(`location.hash`);
 // Delete dialog (opened and cancelled; nothing is deleted)
 await evalJs(`[...document.querySelectorAll('.tokens-table tbody tr')].find(r => /pool ↗/.test(r.textContent)).querySelector('button.danger').click(); true`);
-await waitFor(`!!document.querySelector('.danger-dialog') && !/Checking your Rhea/.test(document.querySelector('.danger-dialog').textContent)`, 20000);
-out.deleteDialog = await evalJs(`(() => { const d = document.querySelector('.danger-dialog'); return { stays: /stays on the NEAR blockchain/.test(d.textContent), offline: /go(es)? offline/.test(d.textContent), liquidity: (d.querySelector('label.pick')?.textContent ?? d.querySelector('.del-facts li:last-child')?.textContent ?? '').trim().slice(0, 90), confirm: [...d.querySelectorAll('button')].map(b => b.textContent).join(' | ') }; })()`);
+await waitFor(`!!document.querySelector('.danger-dialog') && !/Checking your Rhea|quoting…/.test(document.querySelector('.danger-dialog').textContent)`, 25000);
+out.deleteDialog = await evalJs(`(() => { const d = document.querySelector('.danger-dialog'); return { stays: /stays on the NEAR blockchain/.test(d.textContent), offline: /go(es)? offline/.test(d.textContent), liquidity: (d.querySelector('label.pick')?.textContent ?? d.querySelector('.del-facts li:last-child')?.textContent ?? '').trim().slice(0, 90), confirm: [...d.querySelectorAll('button')].map(b => b.textContent).join(' | '), quoteRow: [...d.querySelectorAll('.lp-table tbody tr')].map(r => r.textContent).join(' / '), badSlippage: (() => { const i = d.querySelector('.slip-input'); if (!i) return null; const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(i, '25'); i.dispatchEvent(new Event('input', { bubbles: true })); return true; })() }; })()`);
+await new Promise((r) => setTimeout(r, 300));
+out.slippageGuard = await evalJs(`(() => { const d = document.querySelector('.danger-dialog'); return (d.querySelector('.error')?.textContent ?? '') + ' · confirm disabled: ' + [...d.querySelectorAll('button.danger')][0].disabled; })()`);
 await evalJs(`[...document.querySelectorAll('.danger-dialog button')].find(b => b.textContent === 'Cancel').click(); true`);
 out.showDeletedToggle = await evalJs(`!!document.querySelector('.tokens-dash input[type=checkbox]') && /Show deleted/.test(document.querySelector('.tokens-dash').textContent)`);
 

@@ -1,7 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { tokenIconDataUri, type LaunchedToken } from "@osl/schema";
 import { EXPLORER_BASE } from "../lib/config";
-import { REMOVE_MAX_FEE_NEAR, type DclPosition } from "../lib/dcl";
+import {
+  fmtUnits,
+  minsFor,
+  poolTokens,
+  quotePosition,
+  REMOVE_MAX_FEE_NEAR,
+  SLIPPAGE_DEFAULT,
+  SLIPPAGE_MAX,
+  SLIPPAGE_MIN,
+  SLIPPAGE_PRESETS,
+  slippageBps,
+  type DclPosition,
+  type PositionQuote,
+  type PullItem,
+  type PullResult,
+} from "../lib/dcl";
+import { DCL_CONTRACT } from "../lib/config";
+import { viewCall } from "../lib/near";
 
 type VenueFilter = "all" | "unlisted" | "listed" | "rhea" | "nearly" | "justhoot";
 type Sort = "new" | "old" | "name";
@@ -28,6 +45,9 @@ export default function MyTokens({
   onRestore,
   loadPositions,
   notice,
+  lpResults,
+  onRetryLiquidity,
+  onDismissLp,
 }: {
   account: string;
   launches: LaunchedToken[] | null;
@@ -36,11 +56,15 @@ export default function MyTokens({
   onReload: () => void;
   onListOnRhea: (tokenIds: string[]) => void;
   /** Takes the sites down first, then (optionally) signs DCL remove_liquidity for `positions`. */
-  onDelete: (tickers: string[], positions: { ticker: string; p: DclPosition }[]) => void;
+  onDelete: (tickers: string[], items: PullItem[]) => void;
   onRestore: (tickers: string[]) => void;
   /** Creator's removable / farmed DCL positions per tokenId (one view call). */
   loadPositions: (tokenIds: string[]) => Promise<Map<string, { removable: DclPosition[]; farmed: DclPosition[] }>>;
   notice: string | null;
+  /** Per-position outcome of the last liquidity pull (withdrawn / slippage revert / failed / couldn't quote). */
+  lpResults: PullResult[] | null;
+  onRetryLiquidity: (items: PullItem[]) => void;
+  onDismissLp: () => void;
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<VenueFilter>("all");
@@ -49,6 +73,7 @@ export default function MyTokens({
   const [copied, setCopied] = useState<string | null>(null);
   const [showDeleted, setShowDeleted] = useState(false);
   const [confirmDel, setConfirmDel] = useState<LaunchedToken[] | null>(null);
+  const [retryLp, setRetryLp] = useState<PullResult[] | null>(null);
 
   const everything = launches ?? [];
   const deletedCount = everything.filter((l) => l.deletedAt).length;
@@ -173,16 +198,31 @@ export default function MyTokens({
         )}
         {progress && <p className="muted small">{progress}</p>}
         {notice && <p className="admin-msg">{notice}</p>}
+        {lpResults && lpResults.some((r) => r.state !== "withdrawn") && (
+          <PullReport results={lpResults} busy={busy} onRetry={(rs) => setRetryLp(rs)} onDismiss={onDismissLp} />
+        )}
         {confirmDel && (
           <DeleteDialog
             tokens={confirmDel}
             loadPositions={loadPositions}
             onCancel={() => setConfirmDel(null)}
-            onConfirm={(positions) => {
+            onConfirm={(items) => {
               const t = confirmDel.map((l) => l.ticker);
               setConfirmDel(null);
               setSel(new Set());
-              onDelete(t, positions);
+              onDelete(t, items);
+            }}
+          />
+        )}
+        {retryLp && (
+          <DeleteDialog
+            tokens={everything.filter((l) => retryLp.some((r) => r.ticker === l.ticker))}
+            retry={retryLp}
+            loadPositions={loadPositions}
+            onCancel={() => setRetryLp(null)}
+            onConfirm={(items) => {
+              setRetryLp(null);
+              onRetryLiquidity(items);
             }}
           />
         )}
@@ -292,71 +332,199 @@ function fmtDate(ms: number) {
   return new Date(ms).toLocaleString(undefined, { year: "2-digit", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-/** Danger confirm: what Delete does and doesn't do, plus the optional Rhea liquidity withdrawal and its cost. */
+const STATE_LABEL: Record<PullResult["state"], string> = {
+  withdrawn: "withdrawn",
+  slippage: "price moved: reverted by the slippage check, nothing withdrawn",
+  failed: "failed",
+  unquoted: "skipped: couldn't quote",
+  "not-signed": "not signed",
+};
+
+/** Per-position outcome of a liquidity pull, with "Retry with fresh prices" for the ones still in the pool. */
+function PullReport({ results, busy, onRetry, onDismiss }: { results: PullResult[]; busy: boolean; onRetry: (r: PullResult[]) => void; onDismiss: () => void }) {
+  const retryable = results.filter((r) => r.state !== "withdrawn");
+  return (
+    <div className="card lp-report" role="status">
+      <strong>Rhea liquidity: {results.length - retryable.length}/{results.length} withdrawn.</strong> The page delete stands either way.
+      <ul>
+        {results.map((r) => (
+          <li key={r.p.lpt_id} className={r.state === "withdrawn" ? "" : "lp-bad"}>
+            ${r.ticker.toUpperCase()} position #{r.p.lpt_id.split("#")[1]}: {STATE_LABEL[r.state]}
+            {r.txHash && <> · <a href={`${EXPLORER_BASE}/txns/${r.txHash}`} target="_blank" rel="noreferrer">tx ↗</a></>}
+            {r.note && r.state !== "withdrawn" && <span className="muted small"> ({r.note})</span>}
+          </li>
+        ))}
+      </ul>
+      <div className="row">
+        <button className="danger" disabled={busy} onClick={() => onRetry(retryable)}>Retry with fresh prices ({retryable.length})</button>
+        <button className="ghost" onClick={onDismiss}>Dismiss</button>
+      </div>
+    </div>
+  );
+}
+
+type Row = { ticker: string; p: DclPosition };
+
+/**
+ * Danger confirm: what Delete does and doesn't do, plus the optional Rhea liquidity withdrawal with slippage
+ * protection (expected amounts from DCL predict_remove_liquidity, mins at the chosen slippage). With `retry`
+ * it's liquidity-only for those positions (the pages are already down).
+ */
 function DeleteDialog({
   tokens,
+  retry,
   loadPositions,
   onCancel,
   onConfirm,
 }: {
   tokens: LaunchedToken[];
+  retry?: PullResult[];
   loadPositions: (tokenIds: string[]) => Promise<Map<string, { removable: DclPosition[]; farmed: DclPosition[] }>>;
   onCancel: () => void;
-  onConfirm: (positions: { ticker: string; p: DclPosition }[]) => void;
+  onConfirm: (items: PullItem[]) => void;
 }) {
-  const [pos, setPos] = useState<{ ticker: string; p: DclPosition }[] | null>(null);
+  const [pos, setPos] = useState<Row[] | null>(null);
   const [farmed, setFarmed] = useState(0);
   const [posErr, setPosErr] = useState<string | null>(null);
   const [pull, setPull] = useState(true);
+  const [quotes, setQuotes] = useState<Map<string, PositionQuote> | null>(null);
+  const [decimals, setDecimals] = useState<Map<string, number>>(new Map());
+  const [slip, setSlip] = useState<string>(String(SLIPPAGE_DEFAULT));
+  const [unq, setUnq] = useState<Map<string, "skip" | "unprotected">>(new Map());
+
+  const quoteAll = async (rows: Row[]) => {
+    setQuotes(null);
+    const qs = await Promise.all(rows.map(async (r) => [r.p.lpt_id, await quotePosition(viewCall, DCL_CONTRACT, r.p)] as const));
+    setQuotes(new Map(qs));
+    const ids = [...new Set(rows.flatMap((r) => Object.values(poolTokens(r.p))))].filter((t) => !decimals.has(t));
+    const ds = await Promise.all(ids.map(async (t) => [t, await viewCall<{ decimals: number }>(t, "ft_metadata").then((m) => m.decimals).catch(() => -1)] as const));
+    setDecimals((d) => new Map([...d, ...ds]));
+  };
   useEffect(() => {
     loadPositions(tokens.map((t) => t.tokenId))
       .then((m) => {
-        const list: { ticker: string; p: DclPosition }[] = [];
+        const list: Row[] = [];
         let f = 0;
+        const only = retry ? new Set(retry.map((r) => r.p.lpt_id)) : null;
         for (const t of tokens) {
           const r = m.get(t.tokenId);
-          for (const p of r?.removable ?? []) list.push({ ticker: t.ticker, p });
+          for (const p of r?.removable ?? []) if (!only || only.has(p.lpt_id)) list.push({ ticker: t.ticker, p });
           f += r?.farmed.length ?? 0;
         }
         setPos(list);
-        setFarmed(f);
+        setFarmed(retry ? 0 : f);
         setPull(list.length > 0);
+        if (list.length) void quoteAll(list);
       })
       .catch((e) => (setPos([]), setPosErr((e as Error).message)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   const n = tokens.length;
-  const approvals = pos ? Math.ceil(pos.length / 10) : 0;
+  const bps = slippageBps(Number(slip));
+  const items: PullItem[] = !pull || !pos || !quotes || bps === null ? [] : pos.flatMap((r): PullItem[] => {
+    const q = quotes.get(r.p.lpt_id);
+    if (q?.ok) return [{ ...r, mode: "protect", bps }];
+    return unq.get(r.p.lpt_id) === "unprotected" ? [{ ...r, mode: "unprotected" }] : [];
+  });
+  const approvals = Math.ceil(items.length / 10);
+  const amt = (v: bigint, token: string) => {
+    const d = decimals.get(token);
+    return d === undefined || d < 0 ? `${v.toString()} base units` : fmtUnits(v, d);
+  };
+  const sym = (token: string) => (token.startsWith("wrap.") ? "wNEAR" : `$${token.split(".")[0].toUpperCase()}`);
+  const both = (x: bigint, y: bigint, p: DclPosition) => {
+    const t = poolTokens(p);
+    return [x > 0n || y === 0n ? `${amt(x, t.x)} ${sym(t.x)}` : null, y > 0n ? `${amt(y, t.y)} ${sym(t.y)}` : null].filter(Boolean).join(" + ");
+  };
+  const waiting = pos === null || (pull && !!pos?.length && quotes === null);
+  const nothing = retry ? items.length === 0 : false;
+
   return (
     <div className="danger-dialog" role="alertdialog" aria-modal="true" aria-labelledby="del-title">
       <div className="card danger-card">
-        <h2 id="del-title">Delete {n === 1 ? `$${tokens[0].ticker.toUpperCase()}` : `${n} tokens`}?</h2>
+        <h2 id="del-title">{retry ? "Retry liquidity withdrawal with fresh prices" : `Delete ${n === 1 ? `$${tokens[0].ticker.toUpperCase()}` : `${n} tokens`}?`}</h2>
         <ul className="del-facts">
-          <li><strong>The token itself stays on the NEAR blockchain.</strong> Nobody can delete it; holders keep their tokens and it can still be traded wherever it's listed.</li>
-          <li>The Yeetpad page{n > 1 ? "s" : ""} at <code>/t/…</code> go{n > 1 ? "" : "es"} offline (visitors see "taken down by its creator") and {n > 1 ? "they're" : "it's"} hidden from My tokens. You can restore {n > 1 ? "them" : "it"} later.</li>
+          {!retry && (
+            <>
+              <li><strong>The token itself stays on the NEAR blockchain.</strong> Nobody can delete it; holders keep their tokens and it can still be traded wherever it's listed.</li>
+              <li>The Yeetpad page{n > 1 ? "s" : ""} at <code>/t/…</code> go{n > 1 ? "" : "es"} offline (visitors see "taken down by its creator") and {n > 1 ? "they're" : "it's"} hidden from My tokens. You can restore {n > 1 ? "them" : "it"} later.</li>
+            </>
+          )}
           <li>
             {pos === null ? (
               <span className="muted">Checking your Rhea liquidity…</span>
             ) : pos.length === 0 ? (
-              <span className="muted">No Rhea liquidity of yours to pull{posErr ? ` (couldn't check: ${posErr})` : ""}.</span>
+              <span className="muted">{retry ? "Those positions are no longer in the pool (already withdrawn or gone)." : "No Rhea liquidity of yours to pull"}{posErr ? ` (couldn't check: ${posErr})` : ""}{retry ? "" : "."}</span>
+            ) : retry ? (
+              <strong>{pos.length} position{pos.length > 1 ? "s" : ""} still in the pool</strong>
             ) : (
               <label className="pick">
                 <input type="checkbox" checked={pull} onChange={(e) => setPull(e.target.checked)} /> Also pull my liquidity from Rhea: {pos.length} position{pos.length > 1 ? "s" : ""}
               </label>
             )}
-            {pos && pos.length > 0 && (
-              <p className="small muted">
-                Your wallet signs one <code>remove_liquidity</code> per position ({pos.length} transaction{pos.length > 1 ? "s" : ""}, {approvals} wallet approval{approvals > 1 ? "s" : ""}, up to 10 each).
-                No deposit; gas only, at most ~{REMOVE_MAX_FEE_NEAR.toFixed(3)} NEAR per transaction (usually under 0.002, the rest is refunded).
-                The tokens and NEAR in the pool go straight back to your wallet. The pool stays on Rhea, empty of your liquidity. This runs after the pages are taken down; if you reject it, the pages stay down.
-              </p>
+            {pull && pos && pos.length > 0 && (
+              <div className="lp-quote">
+                <div className="row slip-row">
+                  <span className="small">Slippage tolerance:</span>
+                  {SLIPPAGE_PRESETS.map((v) => (
+                    <button key={v} className={`mini ${Number(slip) === v ? "is-on" : "ghost"}`} onClick={() => setSlip(String(v))}>{v}%</button>
+                  ))}
+                  <label className="small">
+                    custom <input className="slip-input" type="number" min={SLIPPAGE_MIN} max={SLIPPAGE_MAX} step="0.1" value={slip} onChange={(e) => setSlip(e.target.value)} aria-label="custom slippage percent" /> %
+                  </label>
+                  <button className="link" onClick={() => void quoteAll(pos)} disabled={quotes === null}>refresh quotes</button>
+                </div>
+                {bps === null && <p className="error small">Slippage must be between {SLIPPAGE_MIN}% and {SLIPPAGE_MAX}%.</p>}
+                <table className="admin-table lp-table">
+                  <thead>
+                    <tr><th>Position</th><th>You get now (expected)</th><th>Minimum{bps !== null ? ` (−${bps / 100}%)` : ""}</th></tr>
+                  </thead>
+                  <tbody>
+                    {pos.map((r) => {
+                      const q = quotes?.get(r.p.lpt_id);
+                      return (
+                        <tr key={r.p.lpt_id}>
+                          <td>${r.ticker.toUpperCase()} #{r.p.lpt_id.split("#")[1]}</td>
+                          {quotes === null ? (
+                            <td colSpan={2} className="muted">quoting…</td>
+                          ) : q?.ok ? (
+                            <>
+                              <td>{both(q.x, q.y, r.p)}</td>
+                              <td>{bps === null ? "-" : (() => { const m = minsFor(q, bps); return both(m.x, m.y, r.p); })()}</td>
+                            </>
+                          ) : (
+                            <td colSpan={2} className="lp-unq">
+                              <span className="error small">Couldn't quote{q && !q.ok ? `: ${q.error}` : ""}.</span>{" "}
+                              <select
+                                aria-label={`what to do with position ${r.p.lpt_id}`}
+                                value={unq.get(r.p.lpt_id) ?? "skip"}
+                                onChange={(e) => setUnq((m) => new Map(m).set(r.p.lpt_id, e.target.value as "skip" | "unprotected"))}
+                              >
+                                <option value="skip">Skip this position</option>
+                                <option value="unprotected">Withdraw without slippage protection</option>
+                              </select>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <p className="small muted">
+                  Amounts are re-quoted from Rhea right before your wallet opens; if the price moves more than your tolerance before it lands, that withdrawal reverts (nothing lost but gas) and you can retry with fresh prices.
+                  Your wallet signs one <code>remove_liquidity</code> per position ({items.length} transaction{items.length === 1 ? "" : "s"}, {approvals} wallet approval{approvals === 1 ? "" : "s"}, up to 10 each).
+                  No deposit; gas only, at most ~{REMOVE_MAX_FEE_NEAR.toFixed(3)} NEAR per transaction (usually under 0.002, the rest is refunded).
+                  The tokens and NEAR go straight back to your wallet; the pool stays on Rhea, empty of your liquidity.{retry ? "" : " This runs after the pages are taken down; if it fails or you reject it, the pages stay down."}
+                </p>
+              </div>
             )}
             {farmed > 0 && <p className="small muted">{farmed} position{farmed > 1 ? "s are" : " is"} staked in a farm; unstake on Rhea first to pull {farmed > 1 ? "them" : "it"}.</p>}
           </li>
         </ul>
         <div className="row">
-          <button className="danger" disabled={pos === null} onClick={() => onConfirm(pull && pos ? pos : [])}>
-            Delete{pull && pos?.length ? " + pull liquidity" : ""}
+          <button className="danger" disabled={waiting || (pull && !!pos?.length && bps === null) || nothing} onClick={() => onConfirm(items)}>
+            {retry ? `Withdraw ${items.length}` : `Delete${items.length ? ` + pull ${items.length} position${items.length > 1 ? "s" : ""}` : ""}`}
           </button>
           <button className="ghost" onClick={onCancel}>Cancel</button>
         </div>

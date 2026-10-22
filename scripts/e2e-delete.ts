@@ -4,7 +4,7 @@
 //   2. LPT given: signs the same DCL remove_liquidity call the Studio builds (removeLiquidityCall) for that position.
 import { Account, JsonRpcProvider, KeyPair, KeyPairSigner, actions, type KeyPairString } from "near-api-js";
 import { readFileSync } from "node:fs";
-import { removeLiquidityCall, type DclPosition } from "../apps/studio-web/src/lib/dcl";
+import { minsFor, quotePosition, removeLiquidityCall, slippageBps, type DclPosition } from "../apps/studio-web/src/lib/dcl";
 
 const API = process.env.API_URL ?? "https://one-shot-launchpad-api.sushmitsarmah.workers.dev";
 const SITE = process.env.SITE_URL ?? "https://yeetpad.fun";
@@ -54,7 +54,9 @@ if (process.env.LPT) {
   const lp = (await provider.callFunction({ contractId: DCL, method: "get_liquidity", args: { lpt_id: process.env.LPT } })) as DclPosition | null;
   if (!lp || lp.owner_id !== who || BigInt(lp.amount) === 0n) console.log(`position ${process.env.LPT}: gone, empty or not ours; skipped`);
   else {
-    const call = removeLiquidityCall(DCL, lp, "lp");
+    const q = await quotePosition((c, m, a) => provider.callFunction({ contractId: c, method: m, args: a as Record<string, unknown> }), DCL, lp);
+    if (!q.ok) throw new Error(`couldn't quote ${process.env.LPT}: ${q.error}`);
+    const call = removeLiquidityCall(DCL, lp, "lp", minsFor(q, slippageBps(1)!));
     const tk = lp.pool_id.split("|").find((t) => !t.startsWith("wrap."))!;
     const bal0 = BigInt((await provider.callFunction({ contractId: tk, method: "ft_balance_of", args: { account_id: who } })) as string);
     const before = await wallet();

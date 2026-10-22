@@ -216,3 +216,12 @@ details summary { cursor: pointer; font-weight: 700; }
 .del-facts { display: grid; gap: 0.6rem; padding-left: 1.1rem; margin: 0 0 1rem; }
 .del-facts p { margin: 0.35rem 0 0; }
 .app-main .danger-card button.danger { background: #c81e4b; color: #fff; }
+.lp-quote { margin-top: 0.5rem; display: grid; gap: 0.4rem; }
+.slip-row { flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.slip-row .is-on { background: #1b1433; color: #fff; }
+.slip-input { width: 5rem; }
+.lp-table td, .lp-table th { font-size: 0.85rem; }
+.lp-unq select { font-size: 0.85rem; }
+.lp-report { border-color: #c81e4b !important; margin: 0.5rem 0; }
+.lp-report ul { margin: 0.4rem 0; padding-left: 1.1rem; }
+.lp-report .lp-bad { color: #9b1239; }

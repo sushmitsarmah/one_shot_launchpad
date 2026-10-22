@@ -23,8 +23,8 @@ import {
 import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, friendlyWalletError, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
 import { viewCall } from "../lib/near";
-import { getVaultBalance } from "../lib/near";
-import { removablePositions, removeLiquidityCall, type DclPosition } from "../lib/dcl";
+import { getVaultBalance, txFailure } from "../lib/near";
+import { classifyPull, minsFor, quotePosition, removablePositions, removeLiquidityCall, UNPROTECTED, type DclPosition, type PullItem, type PullResult } from "../lib/dcl";
 import { aiComputeCost, ApiError, tokensAction, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
 import { applyResults, isDone, loadDraft, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveRun, type LaunchRun, type RunItem } from "../lib/run";
 import MyTokens from "./MyTokens";
@@ -81,6 +81,7 @@ export default function Studio() {
   const [qErr, setQErr] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [lpResults, setLpResults] = useState<PullResult[] | null>(null);
   const [nearlyOff, setNearlyOff] = useState<string | null>(null);
   const [justhootOff, setJusthootOff] = useState<string | null>("mainnet only, enabled at mainnet launch");
   useEffect(() => {
@@ -306,10 +307,68 @@ export default function Studio() {
     return new Map(tokenIds.map((t) => [t, removablePositions(all, t, account!)] as const));
   };
 
-  /** Delete = take the sites down (API) first, then optionally pull Rhea liquidity (wallet-signed, 10 per approval). */
-  const deleteTokens = (tickers: string[], positions: { ticker: string; p: DclPosition }[]) =>
+  /**
+   * Wallet-signed DCL remove_liquidity, 10 per approval. Right before signing each position is re-quoted
+   * (predict_remove_liquidity) and mins = expected × (1 − slippage); a position that can't be quoted now is
+   * skipped unless the user chose "withdraw without protection". Outcomes are read back from the chain.
+   */
+  const pullLiquidity = async (items: PullItem[]): Promise<PullResult[]> => {
+    const results: PullResult[] = [];
+    const ready: { item: PullItem; call: ReturnType<typeof removeLiquidityCall> }[] = [];
+    setProgress(`Quoting ${items.length} Rhea position${items.length > 1 ? "s" : ""} at current prices…`);
+    for (const item of items) {
+      const fresh = await viewCall<DclPosition | null>(DCL_CONTRACT, "get_liquidity", { lpt_id: item.p.lpt_id }).catch(() => item.p);
+      if (!fresh || BigInt(fresh.amount || "0") === 0n) {
+        results.push({ ticker: item.ticker, p: item.p, state: "withdrawn", note: "already gone or empty" });
+        continue;
+      }
+      if (item.mode === "unprotected") {
+        ready.push({ item, call: removeLiquidityCall(DCL_CONTRACT, fresh, item.ticker, UNPROTECTED) });
+        continue;
+      }
+      const q = await quotePosition(viewCall, DCL_CONTRACT, fresh);
+      if (!q.ok) results.push({ ticker: item.ticker, p: fresh, state: "unquoted", note: q.error });
+      else ready.push({ item: { ...item, p: fresh }, call: removeLiquidityCall(DCL_CONTRACT, fresh, item.ticker, minsFor(q, item.bps)) });
+    }
+    const hashes = new Map<number, string>();
+    let thrown: string | null = null;
+    let prompted = 0;
+    if (ready.length) {
+      try {
+        await signCallsInChunks(ready.map((r) => r.call), 10, {
+          persist: false,
+          onPrompt: (k, of) => {
+            prompted = Math.min(k * 10, ready.length);
+            setProgress(`Pulling liquidity: approval ${k} of ${of} in your wallet (${Math.min(10, ready.length - (k - 1) * 10)} position${ready.length > 1 ? "s" : ""})…`);
+          },
+          onSigned: (signed) => signed.forEach((x) => x.index !== undefined && hashes.set(x.index, x.txHash)),
+        });
+      } catch (e) {
+        thrown = friendlyWalletError(e).message;
+      }
+      setProgress("Checking what came back…");
+      for (const [i, r] of ready.entries()) {
+        const after = await viewCall<DclPosition | null>(DCL_CONTRACT, "get_liquidity", { lpt_id: r.item.p.lpt_id }).catch(() => r.item.p);
+        const hash = hashes.get(i);
+        const inFailedChunk = !hash && thrown !== null && i < prompted;
+        const failure = hash ? await txFailure(hash, account!).catch(() => null) : inFailedChunk ? thrown : null;
+        const sent = !!hash || (inFailedChunk && !!failure && /E204|slippage|Smart contract panicked/i.test(failure));
+        const state = classifyPull(after, sent, failure);
+        results.push({ ticker: r.item.ticker, p: r.item.p, state, txHash: hash, note: state === "withdrawn" ? undefined : (failure ?? thrown ?? undefined)?.slice(0, 200) });
+      }
+    }
+    return results;
+  };
+  const summarize = (res: PullResult[]) => {
+    const ok = res.filter((r) => r.state === "withdrawn").length;
+    return ` Rhea liquidity: ${ok}/${res.length} position${res.length > 1 ? "s" : ""} withdrawn${ok < res.length ? "; see below" : ""}.`;
+  };
+
+  /** Delete = take the sites down (API) first, then optionally pull Rhea liquidity; the takedown stands either way. */
+  const deleteTokens = (tickers: string[], items: PullItem[]) =>
     run("delete", async () => {
       setNotice(null);
+      setLpResults(null);
       const token = await authToken(account!);
       if (!token) return;
       setProgress(`Taking down ${tickers.length} page${tickers.length > 1 ? "s" : ""}…`);
@@ -319,16 +378,11 @@ export default function Studio() {
         const bad = res.filter((r) => !r.ok);
         let msg = `Took down ${ok} page${ok === 1 ? "" : "s"}.`;
         await loadLaunches();
-        if (positions.length) {
-          const calls = positions.map(({ ticker, p }) => removeLiquidityCall(DCL_CONTRACT, p, ticker));
-          try {
-            const signed = await signCallsInChunks(calls, 10, {
-              persist: false,
-              onPrompt: (k, of) => setProgress(`Pulling liquidity: approval ${k} of ${of} in your wallet (${Math.min(10, calls.length - (k - 1) * 10)} position${calls.length > 1 ? "s" : ""})…`),
-            });
-            msg += ` Pulled ${signed.length}/${calls.length} Rhea position${calls.length > 1 ? "s" : ""} back to your wallet.`;
-          } catch (e) {
-            msg += ` Liquidity not withdrawn: ${friendlyWalletError(e).message}. You can pull it from Rhea directly.`;
+        if (items.length) {
+          const lp = await pullLiquidity(items).catch((e) => (msg += ` Liquidity not withdrawn: ${(e as Error).message}.`, null));
+          if (lp) {
+            msg += summarize(lp);
+            setLpResults(lp);
           }
         }
         setNotice(msg);
@@ -337,6 +391,21 @@ export default function Studio() {
         setProgress(null);
         await refresh();
         await loadLaunches();
+      }
+    });
+  /** Liquidity only (e.g. "Retry with fresh prices" after a slippage revert); the pages are already down. */
+  const retryLiquidity = (items: PullItem[]) =>
+    run("delete", async () => {
+      setNotice(null);
+      try {
+        const lp = await pullLiquidity(items);
+        setLpResults(lp);
+        setNotice(summarize(lp).trim());
+      } catch (e) {
+        setError(`Liquidity not withdrawn: ${(e as Error).message}`);
+      } finally {
+        setProgress(null);
+        await refresh();
       }
     });
   const restoreTokens = (tickers: string[]) =>
@@ -741,6 +810,9 @@ export default function Studio() {
           onRestore={restoreTokens}
           loadPositions={loadPositions}
           notice={notice}
+          lpResults={lpResults}
+          onRetryLiquidity={retryLiquidity}
+          onDismissLp={() => setLpResults(null)}
         />
         {error && <p className="error">{error}</p>}
       </>
