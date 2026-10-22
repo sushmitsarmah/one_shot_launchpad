@@ -63,6 +63,11 @@ export function mockIdea(prompt: string): LaunchIdea {
   );
 }
 
+/** One log line per LLM call (Workers observability / `wrangler tail`) so token use can be checked. */
+function logUsage(u: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined | null) {
+  if (u) console.log(JSON.stringify({ llm_usage: { model: config.nearAiModel, prompt: u.prompt_tokens, completion: u.completion_tokens, total: u.total_tokens } }));
+}
+
 export async function generateIdea(prompt: string): Promise<LaunchIdea> {
   if (config.llmMock) return mockIdea(prompt);
   const c = getClient();
@@ -83,6 +88,7 @@ export async function generateIdea(prompt: string): Promise<LaunchIdea> {
       },
     });
     text = r.choices[0]?.message?.content;
+    logUsage(r.usage);
   } catch (e) {
     // Some models behind the gateway don't support json_schema; fall back to json_object.
     if (!(e instanceof OpenAI.APIError) || (e.status !== 400 && e.status !== 422)) throw e;
@@ -94,6 +100,7 @@ export async function generateIdea(prompt: string): Promise<LaunchIdea> {
       response_format: { type: "json_object" },
     });
     text = r.choices[0]?.message?.content;
+    logUsage(r.usage);
   }
   if (!text) throw new Error("LLM returned an empty response");
   return parseIdeaText(text);
