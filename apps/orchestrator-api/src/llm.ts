@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { LaunchIdea, launchIdeaJsonSchema } from "@osl/schema";
+import { LaunchIdea, MAX_BATCH, launchIdeaJsonSchema } from "@osl/schema";
 import { config, configVersion } from "./config";
 
 const SYSTEM = `You are a creative crypto launch strategist for the NEAR ecosystem.
@@ -106,18 +106,24 @@ export async function generateIdea(prompt: string): Promise<LaunchIdea> {
   return parseIdeaText(text);
 }
 
-/** Generates `count` ideas in parallel and makes their tickers unique. */
-export async function generateIdeas(prompt: string, count = 1): Promise<LaunchIdea[]> {
-  const n = Math.max(1, Math.min(5, Math.floor(count)));
+/** Generates `count` (1-MAX_BATCH) ideas in parallel and makes their tickers unique.
+ *  `avoid` = names/tickers already used earlier in a chunked run (only the last few are sent, to keep tokens low). */
+export async function generateIdeas(prompt: string, count = 1, avoid: string[] = []): Promise<LaunchIdea[]> {
+  const n = Math.max(1, Math.min(MAX_BATCH, Math.floor(count)));
+  const recent = avoid.slice(-AVOID_MAX).map((s) => s.slice(0, 24));
+  const tail = recent.length ? ` Don't reuse: ${recent.join(", ")}.` : "";
   const variants = Array.from({ length: n }, (_, i) =>
-    n === 1 ? prompt : `${prompt}\n\n(Idea ${i + 1} of ${n}: make it clearly different from the others, with its own name, ticker and palette.)`,
+    n === 1 && !tail ? prompt : `${prompt}\n\n(Idea ${i + 1} of ${n}: clearly different from the others, own name, ticker and palette.${tail})`,
   );
   const ideas = await Promise.all(variants.map((p) => generateIdea(p)));
-  const seen = new Set<string>();
+  const seen = new Set<string>(avoid.map((s) => s.toLowerCase()));
   return ideas.map((idea) => {
     let t = idea.ticker;
-    for (let k = 2; seen.has(t); k++) t = `${idea.ticker.slice(0, 15 - String(k).length)}${k}`;
+    for (let k = 2; seen.has(t); k++) t = `${idea.ticker.slice(0, 16 - String(k).length)}${k}`;
     seen.add(t);
     return t === idea.ticker ? idea : { ...idea, ticker: t };
   });
 }
+
+/** How many earlier names/tickers go into the prompt (token budget). */
+export const AVOID_MAX = 24;

@@ -91,13 +91,30 @@ export async function deductAiCompute(user: string, amount: bigint): Promise<str
     mockBalances.set(user, b - amount);
     return mockHash();
   }
-  const r = await getRelayer().callFunctionRaw({
-    contractId: config.vaultContract,
-    methodName: "deduct_ai_compute",
-    args: { user_id: user, amount: amount.toString() },
-    gas: 30n * TGAS,
-  });
+  // Chunked 100-idea runs send a few generate requests at once, all signed by the relayer key; a rejected
+  // nonce means the tx never ran, so retrying it is safe (no double charge).
+  const r = await retryOnNonce(() =>
+    getRelayer().callFunctionRaw({
+      contractId: config.vaultContract,
+      methodName: "deduct_ai_compute",
+      args: { user_id: user, amount: amount.toString() },
+      gas: 30n * TGAS,
+    }),
+  );
   return r.transaction.hash;
+}
+
+/** Retries `fn` when the relayer's tx was rejected for its nonce (concurrent requests on one key). */
+export async function retryOnNonce<T>(fn: () => Promise<T>, tries = 4, waitMs = 400): Promise<T> {
+  for (let a = 1; ; a++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const msg = `${(e as Error)?.name ?? ""} ${(e as Error)?.message ?? e}`;
+      if (a >= tries || !/nonce/i.test(msg)) throw e;
+      await new Promise((r) => setTimeout(r, waitMs * a + Math.floor(Math.random() * 300)));
+    }
+  }
 }
 
 export interface TokenArgs {

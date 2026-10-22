@@ -121,6 +121,33 @@ describe("batch + sites (mock mode)", () => {
     expect((await post("/api/generate", { prompt: "too many", count: 6 }, t)).status).toBe(400);
   });
 
+  test("a 12-idea run in MAX_BATCH chunks: avoid list keeps tickers unique, each chunk charged", async () => {
+    const { chunkSizes, MAX_BATCH } = await import("@osl/schema");
+    const t = await session("ivy.testnet");
+    const before = BigInt((await (await app.request("/api/balance/ivy.testnet")).json()).balance);
+    const seen = { tickers: new Set<string>() };
+    const all: { ticker: string }[] = [];
+    for (const n of chunkSizes(12)) {
+      expect(n).toBeLessThanOrEqual(MAX_BATCH);
+      const r = await post("/api/generate", { prompt: "cats in space", count: n, avoid: [...seen.tickers] }, t);
+      expect(r.status).toBe(200);
+      const j = await r.json();
+      expect(j.ideas.length).toBe(n);
+      for (const i of j.ideas) expect(seen.tickers.has(i.ticker)).toBe(false);
+      for (const i of j.ideas) seen.tickers.add(i.ticker);
+      all.push(...j.ideas);
+    }
+    expect(new Set(all.map((i) => i.ticker)).size).toBe(12);
+    const after = BigInt((await (await app.request("/api/balance/ivy.testnet")).json()).balance);
+    expect(before - after).toBe(12n * 10n ** 22n);
+  });
+
+  test("health reports the per-call chunk and the run size", async () => {
+    const h = await (await app.request("/api/health")).json();
+    expect(h.maxBatch).toBe(5);
+    expect(h.maxRun).toBe(100);
+  });
+
   test("batch launch, site pages and my launches", async () => {
     const t = await session("hank.testnet");
     const r = await post("/api/launch/batch", { ideas: [idea("alpha"), idea("beta")] }, t);

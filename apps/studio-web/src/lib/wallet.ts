@@ -65,12 +65,22 @@ export const NEARLY_PENDING = "yeetpad.nearlyPending";
  * hashes come back in `?transactionHashes=` (see takeRedirectedNearly).
  */
 export type WalletVenue = "nearly" | "justhoot";
-export async function signCallsInChunks(calls: PreparedCall[], chunk: number, onChunk?: (done: number) => void, venue: WalletVenue = "nearly") {
+export interface SignOpts {
+  /** Called before each wallet prompt: approval `k` of `of` (1-based). */
+  onPrompt?: (k: number, of: number) => void;
+  /** Called after each prompt with that prompt's signed txs (finalize/persist them right away). */
+  onSigned?: (part: { ticker: string; txHash: string }[], doneCalls: number) => void | Promise<void>;
+}
+export async function signCallsInChunks(calls: PreparedCall[], chunk: number, opts: SignOpts | ((done: number) => void) = {}, venue: WalletVenue = "nearly") {
+  const o: SignOpts = typeof opts === "function" ? { onSigned: (_p, n) => opts(n) } : opts;
   const { selector } = await initWallet();
   const wallet = await selector.wallet();
   const out: { ticker: string; txHash: string }[] = [];
-  for (let i = 0; i < calls.length; i += chunk) {
-    const part = calls.slice(i, i + chunk);
+  const size = Math.max(1, chunk);
+  const prompts = Math.ceil(calls.length / size);
+  for (let i = 0, k = 1; i < calls.length; i += size, k++) {
+    const part = calls.slice(i, i + size);
+    o.onPrompt?.(k, prompts);
     localStorage.setItem(NEARLY_PENDING, JSON.stringify({ venue, tickers: part.map((c) => c.ticker) }));
     const res = await wallet.signAndSendTransactions({
       transactions: part.map((c) => ({
@@ -79,9 +89,11 @@ export async function signCallsInChunks(calls: PreparedCall[], chunk: number, on
       })),
     });
     const outcomes = (res ?? []) as { transaction?: { hash?: string } }[];
-    outcomes.forEach((o, k) => o?.transaction?.hash && out.push({ ticker: part[k].ticker, txHash: o.transaction.hash }));
+    const signed: { ticker: string; txHash: string }[] = [];
+    outcomes.forEach((x, j) => x?.transaction?.hash && signed.push({ ticker: part[j].ticker, txHash: x.transaction.hash }));
+    out.push(...signed);
     localStorage.removeItem(NEARLY_PENDING);
-    onChunk?.(Math.min(i + chunk, calls.length));
+    await o.onSigned?.(signed, Math.min(i + size, calls.length));
   }
   return out;
 }

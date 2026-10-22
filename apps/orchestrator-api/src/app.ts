@@ -16,6 +16,8 @@ import {
   WaitlistRequest,
   AdminAccountsRequest,
   formatNear,
+  MAX_BATCH,
+  MAX_RUN,
   type MeResponse,
   type WaitlistResponse,
   type GenerateResponse,
@@ -133,7 +135,8 @@ app.get("/api/health", (c) =>
     vault: config.vaultContract,
     factory: config.factoryContract,
     aiComputeCost: config.aiComputeCostYocto,
-    maxBatch: 5,
+    maxBatch: MAX_BATCH,
+    maxRun: MAX_RUN,
     venues: {
       rhea: { dcl: config.dclContract, wnear: config.wnearContract, defaultFdvNear: config.rheaDefaultFdvNear },
       nearly: { factory: config.nearlyFactory, chunk: config.nearlyBatchChunk, enabled: config.nearlyEnabled, reason: config.nearlyEnabled ? null : config.nearlyDisabledReason },
@@ -217,7 +220,7 @@ app.post("/api/generate", requireSession, requireAllowed, async (c) => {
     return c.json({ error: `insufficient vault balance: need ${formatNear(cost)} NEAR for ${count} idea(s), have ${formatNear(bal)}` }, 402);
   }
 
-  const ideas = await generateIdeas(prompt, count);
+  const ideas = await generateIdeas(prompt, count, body.data.avoid ?? []);
   // Charge only after valid ideas were produced (one charge for the whole set).
   const txHash = cost > 0n ? await deductAiCompute(ownerWallet, cost) : null;
   const res: GenerateResponse = { idea: ideas[0], ideas, charged: cost.toString(), txHash };
@@ -796,6 +799,7 @@ const toLaunched = async (r: TokenRecord): Promise<LaunchedToken> => {
     gaId: kv?.analytics?.gaId ?? null,
     siteUrl: siteUrl(kv?.slug ?? r.ticker),
     explorerUrl: `${config.explorerBase}/address/${r.token_id}`,
+    txHash: kv?.tokenLaunch.txHash ?? null,
   };
 };
 
@@ -830,6 +834,7 @@ app.get("/api/launches/:account", async (c) => {
         siteUrl: siteUrl(kv?.slug ?? n.ticker),
         explorerUrl: n.venue === "justhoot" ? `https://nearblocks.io/address/${n.tokenId}` : `${config.explorerBase}/address/${n.tokenId}`,
         venue: n.venue,
+        txHash: kv?.tokenLaunch.txHash ?? l?.txHash ?? null,
         venueUrl: l?.url ?? (n.venue === "justhoot" ? justhootUrl(n.tokenId) : nearlyUrl(n.tokenId)),
       });
     }

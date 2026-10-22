@@ -1,10 +1,28 @@
-import { useCallback, useEffect, useState } from "react";
-import { formatNear, parseNear, MAX_BATCH, type BatchLaunchResponse, type LaunchedToken, type LaunchIdea, type QuoteResponse, type SessionResponse } from "@osl/schema";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  formatNear,
+  parseNear,
+  MAX_BATCH,
+  MAX_RUN,
+  chunk,
+  chunkSizes,
+  clampRun,
+  dedupeIdeas,
+  pool,
+  tokenIconDataUri,
+  type BatchLaunchResponse,
+  type LaunchedToken,
+  type LaunchIdea,
+  type QuoteResponse,
+  type SessionResponse,
+} from "@osl/schema";
 import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, friendlyWalletError, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
 import { viewCall } from "../lib/near";
 import { getVaultBalance } from "../lib/near";
-import { appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
+import { aiComputeCost, ApiError, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
+import { applyResults, isDone, loadRun, mark, newRun, reconcile, runCounts, saveRun, type LaunchRun, type RunItem } from "../lib/run";
+import MyTokens from "./MyTokens";
 import { webpIcons } from "../lib/icon";
 import { EXPLORER_BASE, NETWORK } from "../lib/config";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
@@ -13,6 +31,13 @@ import Admin from "./Admin";
 import { VAULT_CONTRACT } from "../lib/config";
 
 type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist";
+type Tab = "studio" | "tokens" | "admin";
+const COUNT_PRESETS = [1, 5, 10, 25, 50, 100];
+/** Ideas list switches from full cards to light rows above this many. */
+const CARD_MAX = 6;
+/** Generation chunks in flight at once (each is one /api/generate call of up to MAX_BATCH ideas). */
+const GEN_CONCURRENCY = 3;
+const tabFromHash = (): Tab => (typeof location === "undefined" ? "studio" : location.hash === "#admin" ? "admin" : location.hash === "#tokens" ? "tokens" : "studio");
 
 export default function Studio() {
   const [account, setAccount] = useState<string | null>(null);
@@ -20,6 +45,13 @@ export default function Studio() {
   const [amount, setAmount] = useState("1");
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState(1);
+  const [customCount, setCustomCount] = useState("");
+  const [genProgress, setGenProgress] = useState<string | null>(null);
+  const genStop = useRef(false);
+  const [lrun, setLrun] = useState<LaunchRun | null>(null);
+  const runRef = useRef<LaunchRun | null>(null);
+  const launchStop = useRef(false);
+  const [aiCost, setAiCost] = useState<string | null>(null);
   const [ideas, setIdeas] = useState<LaunchIdea[]>([]);
   const [picked, setPicked] = useState<boolean[]>([]);
   const [result, setResult] = useState<BatchLaunchResponse | null>(null);
@@ -47,10 +79,28 @@ export default function Studio() {
       setJusthootOff(v.justhoot.enabled ? null : v.justhoot.reason);
     });
   }, [account]);
-  const [tab, setTab] = useState<"studio" | "admin">(() => (typeof location !== "undefined" && location.hash === "#admin" ? "admin" : "studio"));
-  const openTab = (t: "studio" | "admin") => {
+  const [tab, setTab] = useState<Tab>(tabFromHash);
+  const openTab = (t: Tab) => {
     setTab(t);
-    history.replaceState(null, "", t === "admin" ? "#admin" : location.pathname + location.search);
+    history.replaceState(null, "", t === "studio" ? location.pathname + location.search : `#${t}`);
+  };
+  useEffect(() => {
+    const on = () => setTab(tabFromHash());
+    addEventListener("hashchange", on);
+    return () => removeEventListener("hashchange", on);
+  }, []);
+  useEffect(() => {
+    aiComputeCost().then(setAiCost).catch(() => {});
+  }, []);
+
+  // ---- launch run (persisted in localStorage; survives redirect wallets and reloads) ----
+  const setRun = (r: LaunchRun | null) => {
+    runRef.current = r;
+    saveRun(r);
+    setLrun(r);
+  };
+  const updRun = (f: (r: LaunchRun) => LaunchRun) => {
+    if (runRef.current) setRun(f(runRef.current));
   };
 
   // The Admin tab only exists for ADMIN_ACCOUNTS (the API enforces it too).
@@ -130,6 +180,20 @@ export default function Studio() {
   }, [account]);
   useEffect(() => void loadLaunches(), [loadLaunches]);
 
+  // A run left over from a reload / redirect: show it, and mark items that did launch (from My launches) as done.
+  useEffect(() => {
+    if (!account) return;
+    const r = loadRun(account);
+    runRef.current = r;
+    setLrun(r);
+    if (!r || !r.items.some((i) => !isDone(i.status) && i.status !== "failed")) return;
+    myLaunches(account)
+      .then(({ launches }) => runRef.current && setRun(reconcile(runRef.current, launches)))
+      .catch(() => {});
+  }, [account]);
+
+  const ideasRef = useRef<LaunchIdea[]>([]);
+  ideasRef.current = ideas;
   const chosen = ideas.filter((_, i) => picked[i]);
   const rheaOpts = { openingFdvNear: Number(fdv) || 1000, creatorPct: Math.min(90, Math.max(0, Number(creatorPct) || 0)) };
 
@@ -158,30 +222,44 @@ export default function Studio() {
     const { venue, items: done } = takeRedirectedNearly();
     if (!done.length) return;
     (venue === "justhoot" ? justhootFinalize : nearlyFinalize)(done, session.token)
-      .then((r) => setResult({ txHash: done[0].txHash, explorerUrl: `${EXPLORER_BASE}/txns/${done[0].txHash}`, results: r.results }))
+      .then((r) => {
+        if (runRef.current) updRun((x) => applyResults(x, r.results));
+        else setResult({ txHash: done[0].txHash, explorerUrl: `${EXPLORER_BASE}/txns/${done[0].txHash}`, results: r.results });
+      })
       .then(() => loadLaunches())
       .catch((e) => setError((e as Error).message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.token]);
 
-  // Re-list an existing token on Rhea: wallet sends it to the vault, then the API lists it.
-  const relist = (tokenId: string) =>
+  // Re-list existing tokens on Rhea: per token, the wallet sends it to the vault, then the API lists it.
+  // Bulk = one wallet approval per token, in order; a redirect wallet leaves after the first.
+  const relist = (tokenIds: string[]) =>
     run("relist", async () => {
       const token = await authToken(account!);
       if (!token) return;
-      const bal = await viewCall<string>(tokenId, "ft_balance_of", { account_id: account });
-      if (!bal || BigInt(bal) === 0n) throw new Error("you hold none of this token");
-      setProgress("Confirm in your wallet: send the tokens to the vault for listing…");
+      let ok = 0;
       try {
-        if (!(await sendForRelist(tokenId, bal))) return;
-        setProgress("Listing on Rhea…");
-        const r = await listOnRhea(tokenId, token, rheaOpts);
-        if (!r.listing.ok) throw new Error(r.listing.error ?? "listing failed; tokens were returned to your wallet");
+        for (const [k, tokenId] of tokenIds.entries()) {
+          const of = tokenIds.length > 1 ? ` (${k + 1} of ${tokenIds.length})` : "";
+          try {
+            const bal = await viewCall<string>(tokenId, "ft_balance_of", { account_id: account });
+            if (!bal || BigInt(bal) === 0n) throw new Error("you hold none of this token");
+            setProgress(`Confirm in your wallet${of}: send ${tokenId.split(".")[0].toUpperCase()} to the vault for listing…`);
+            if (!(await sendForRelist(tokenId, bal))) return;
+            setProgress(`Listing on Rhea${of}…`);
+            const r = await listOnRhea(tokenId, token, rheaOpts);
+            if (!r.listing.ok) throw new Error(r.listing.error ?? "listing failed; tokens were returned to your wallet");
+            ok++;
+          } catch (e) {
+            const msg = friendlyWalletError(e).message;
+            throw new Error(tokenIds.length > 1 ? `Listed ${ok} of ${tokenIds.length}; stopped at ${tokenId.split(".")[0].toUpperCase()}: ${msg}` : msg);
+          }
+        }
       } finally {
         setProgress(null);
+        await refresh();
+        await loadLaunches();
       }
-      await refresh();
-      await loadLaunches();
     });
 
   useEffect(() => {
@@ -194,26 +272,212 @@ export default function Studio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.token]);
 
-  const launchNearly = async (token: string) => {
-    const prep = await nearlyPrepare(chosen, token);
-    setProgress(`Sign ${prep.txs.length} Nearly launch${prep.txs.length > 1 ? "es" : ""} in your wallet…`);
-    const signed = await signCallsInChunks(prep.txs, prep.chunk, (n) => setProgress(`Signed ${n}/${prep.txs.length}…`));
-    if (!signed.length) throw new Error("the wallet returned no transactions");
-    setProgress("Recording your tokens…");
-    const r = await nearlyFinalize(signed, token);
-    setResult({ txHash: signed[0].txHash, explorerUrl: `${EXPLORER_BASE}/txns/${signed[0].txHash}`, results: r.results });
+  const isAuthErr = (e: unknown) => e instanceof UnauthorizedError || e instanceof NotWhitelistedError;
+  const runProgress = () => {
+    const r = runRef.current;
+    if (!r) return;
+    const c = runCounts(r);
+    return `Launched ${c.done}/${c.total}${c.failed ? ` · ${c.failed} failed` : ""}`;
   };
 
-  // JustHoot: same wallet-signed flow; the browser makes a <=7000-char webp icon (API falls back to SVG / none).
-  const launchJusthoot = async (token: string) => {
-    const prep = await justhootPrepare(chosen, await webpIcons(chosen), token);
-    setProgress(`Sign ${prep.txs.length} JustHoot launch${prep.txs.length > 1 ? "es" : ""} in your wallet…`);
-    const signed = await signCallsInChunks(prep.txs, prep.chunk, (n) => setProgress(`Signed ${n}/${prep.txs.length}…`), "justhoot");
-    if (!signed.length) throw new Error("the wallet returned no transactions");
-    setProgress("Recording your tokens…");
-    const r = await justhootFinalize(signed, token);
-    setResult({ txHash: signed[0].txHash, explorerUrl: `https://nearblocks.io/txns/${signed[0].txHash}`, results: r.results });
+  /** None / Rhea: vault calls of MAX_BATCH tokens, one after another (one relayer key: no nonce clashes). */
+  const launchVault = async (token: string) => {
+    for (;;) {
+      const r = runRef.current!;
+      if (launchStop.current) break;
+      const next = r.items.filter((i) => i.status === "pending").slice(0, MAX_BATCH);
+      if (!next.length) break;
+      const tickers = next.map((i) => i.idea.ticker);
+      updRun((x) => mark(x, tickers, "sending"));
+      setProgress(`${runProgress()} · sending ${tickers.length}${r.venue === "rhea" ? " (Rhea listing ~10 s per token)" : ""}…`);
+      try {
+        const res = await launchBatch(account!, next.map((i) => i.idea), token, r.venue as "none" | "rhea", r.rhea);
+        updRun((x) => applyResults(x, res.results, res.txHash));
+      } catch (e) {
+        if (isAuthErr(e)) {
+          updRun((x) => mark(x, tickers, "pending"));
+          throw e;
+        }
+        const ae = e as ApiError;
+        const body = ae instanceof ApiError ? ae.body : undefined;
+        if (ae instanceof ApiError && ae.status === 402) {
+          updRun((x) => mark(x, tickers, "pending"));
+          throw new Error(`${ae.message}. Top up credits, then press Resume (${runCounts(runRef.current!).done} already launched).`);
+        }
+        if (Array.isArray(body?.results) && body.results.length) {
+          updRun((x) => applyResults(x, body.results as BatchLaunchResponse["results"], (body.txHash as string) ?? null));
+          continue;
+        }
+        // Taken tickers / lost response: anything of this chunk that is already in My launches counts as done.
+        const ls = await myLaunches(account!).then((j) => j.launches).catch(() => [] as LaunchedToken[]);
+        const taken = new Set(ae instanceof ApiError && ae.status === 409 ? (body?.taken ?? []) : []);
+        updRun((x) => {
+          const y = reconcile(mark(x, tickers, "pending"), ls);
+          const left = y.items.filter((i) => tickers.includes(i.idea.ticker) && i.status === "pending");
+          if (taken.size) return mark(y, left.filter((i) => taken.has(i.idea.ticker)).map((i) => i.idea.ticker), "failed", "ticker is taken; edit it and retry");
+          return mark(y, left.map((i) => i.idea.ticker), "failed", `${(e as Error).message || "request failed"} (credits refunded on-chain if the launch failed)`);
+        });
+      }
+    }
   };
+
+  /** Nearly / JustHoot: prepare in MAX_BATCH chunks, then the wallet signs `chunk` (10) per prompt. */
+  const launchWallet = async (token: string, venue: "nearly" | "justhoot") => {
+    const unprepared = runRef.current!.items.filter((i) => i.status === "pending" && !i.tx);
+    let size = runRef.current!.walletChunk ?? 10;
+    for (const [k, part] of chunk(unprepared, MAX_BATCH).entries()) {
+      if (launchStop.current) return;
+      setProgress(`Preparing ${Math.min((k + 1) * MAX_BATCH, unprepared.length)}/${unprepared.length}…`);
+      const ideas = part.map((i) => i.idea);
+      const prep = venue === "justhoot" ? await justhootPrepare(ideas, await webpIcons(ideas), token) : await nearlyPrepare(ideas, token);
+      size = prep.chunk || size;
+      const by = new Map(prep.txs.map((t) => [t.ticker, t]));
+      updRun((x) => ({ ...x, walletChunk: size, items: x.items.map((it) => (by.has(it.idea.ticker) ? { ...it, tx: by.get(it.idea.ticker) } : it)) }));
+    }
+    const todo = runRef.current!.items.filter((i) => i.status === "pending" && i.tx);
+    if (!todo.length) return;
+    const fin = venue === "justhoot" ? justhootFinalize : nearlyFinalize;
+    let current: string[] = [];
+    try {
+      await signCallsInChunks(
+        todo.map((i) => ({ ...i.tx!, ticker: i.idea.ticker })),
+        size,
+        {
+          onPrompt: (k, of) => {
+            current = todo.slice((k - 1) * size, k * size).map((i) => i.idea.ticker);
+            updRun((x) => mark(x, current, "signing"));
+            setProgress(`${runProgress()} · approval ${k} of ${of} in your wallet (${current.length} launch${current.length > 1 ? "es" : ""})…`);
+          },
+          onSigned: async (signed) => {
+            setProgress(`${runProgress()} · recording ${signed.length}…`);
+            const r = signed.length ? await fin(signed, token) : { results: [] };
+            updRun((x) => {
+              const y = applyResults(x, r.results);
+              const got = new Set(signed.map((s) => s.ticker));
+              return mark(y, current.filter((t) => !got.has(t)), "failed", "the wallet returned no transaction for this one");
+            });
+            current = [];
+          },
+        },
+        venue,
+      );
+    } catch (e) {
+      if (current.length) updRun((x) => mark(x, current, "pending"));
+      throw e;
+    }
+  };
+
+  const continueRun = async (token: string) => {
+    launchStop.current = false;
+    const r = runRef.current;
+    if (!r) return;
+    try {
+      if (r.venue === "nearly" || r.venue === "justhoot") await launchWallet(token, r.venue);
+      else await launchVault(token);
+    } finally {
+      setProgress(null);
+      // Launched ideas drop out of the selection so a second click doesn't relaunch them.
+      const done = new Set((runRef.current?.items ?? []).filter((i) => isDone(i.status)).map((i) => i.idea.ticker));
+      setPicked((p) => p.map((v, j) => v && !done.has(ideasRef.current[j]?.ticker)));
+      await refresh();
+      await loadLaunches();
+    }
+  };
+
+  const startLaunch = () =>
+    run("launch", async () => {
+      const left = runRef.current ? runCounts(runRef.current).left : 0;
+      if (left > 0 && !confirm(`Your previous run still has ${left} token(s) not launched. Start a new run instead?`)) return;
+      const token = await authToken(account!);
+      if (!token) return;
+      if ((listOn === "none" || listOn === "rhea") && q && q.listOn === listOn && q.items.length === chosen.length) {
+        const bal = BigInt(await getVaultBalance(account!));
+        const need = BigInt(q.total);
+        if (bal < need) throw new Error(`This run needs ~${formatNear(need)} NEAR of credits; you have ${formatNear(bal)}. Top up at least ${formatNear(need - bal)} NEAR first.`);
+      }
+      setResult(null);
+      setRun(newRun(account!, listOn, chosen, rheaOpts));
+      await continueRun(token);
+    });
+  const resumeRun = () =>
+    run("launch", async () => {
+      const token = await authToken(account!);
+      if (token) await continueRun(token);
+    });
+  const retryFailed = () =>
+    run("launch", async () => {
+      updRun((x) => ({ ...x, items: x.items.map((it) => (it.status === "failed" ? { ...it, status: "pending", error: null, tx: undefined } : it)) }));
+      const token = await authToken(account!);
+      if (token) await continueRun(token);
+    });
+
+  /** Generates `count` ideas as MAX_BATCH-sized /api/generate calls, GEN_CONCURRENCY at a time. */
+  const generateRun = () =>
+    run("generate", async () => {
+      const token = await authToken(account!);
+      if (!token) return;
+      const n = clampRun(count);
+      const per = BigInt(aiCost ?? (await aiComputeCost()));
+      const need = per * BigInt(n);
+      const bal = BigInt(await getVaultBalance(account!));
+      if (bal < need) {
+        throw new Error(`${n} idea${n > 1 ? "s" : ""} cost ${formatNear(need)} NEAR in credits; you have ${formatNear(bal)}. Top up at least ${formatNear(need - bal)} NEAR first.`);
+      }
+      genStop.current = false;
+      setIdeas([]);
+      setPicked([]);
+      ideasRef.current = [];
+      setResult(null);
+      const seen = { names: new Set<string>(), tickers: new Set<string>() };
+      const used: string[] = [];
+      let got = 0;
+      let lastErr: string | null = null;
+      let authErr: unknown = null;
+      setGenProgress(`Generated 0/${n}…`);
+      // A second, smaller round tops up ideas dropped as duplicates (charged like any chunk).
+      for (let round = 0; round < 2 && got < n && !genStop.current && !authErr; round++) {
+        const before = got;
+        await pool(
+          chunkSizes(n - got).map((size) => async () => {
+            if (genStop.current || authErr) throw Object.assign(new Error("stopped"), { noRetry: true });
+            try {
+              const r = await generate(prompt.trim(), account!, token, size, used.slice(-24));
+              return r.ideas ?? [r.idea];
+            } catch (e) {
+              if (isAuthErr(e)) {
+                authErr = e;
+                Object.assign(e as object, { noRetry: true });
+              }
+              throw e;
+            }
+          }),
+          {
+            concurrency: GEN_CONCURRENCY,
+            retries: 2,
+            stop: () => genStop.current,
+            onDone: (_i, r) => {
+              if (!r.ok) {
+                if (r.error !== "stopped") lastErr = r.error;
+                return;
+              }
+              const fresh = dedupeIdeas(r.value, seen).slice(0, n - got);
+              if (!fresh.length) return;
+              got += fresh.length;
+              for (const f of fresh) used.push(f.name, f.ticker);
+              ideasRef.current = [...ideasRef.current, ...fresh];
+              setIdeas(ideasRef.current);
+              setPicked((p) => [...p, ...fresh.map(() => true)]);
+              setGenProgress(`Generated ${got}/${n}…`);
+            },
+          },
+        );
+        if (got === before) break;
+      }
+      await refresh();
+      if (authErr) throw authErr;
+      if (got === 0 && lastErr) throw new Error(lastErr);
+      setGenProgress(got >= n ? `Generated ${got}/${n} ✓` : `Generated ${got}/${n}. ${genStop.current ? "Stopped." : lastErr ? `Some chunks failed: ${lastErr}` : "The rest came back as duplicates."}`);
+    });
 
   const run = async (kind: Busy, fn: () => Promise<void>) => {
     setBusy(kind);
@@ -247,6 +511,13 @@ export default function Studio() {
   }, []);
 
   const isLocked = locked !== false;
+  const lrunCounts = lrun ? runCounts(lrun) : null;
+  const walletPrompts = Math.max(1, Math.ceil(chosen.length / 10));
+  const runStatus = new Map((lrun?.items ?? []).map((it) => [it.idea.ticker, it.status] as const));
+  const removeIdea = (i: number) => {
+    setIdeas((xs) => xs.filter((_, j) => j !== i));
+    setPicked((p) => p.filter((_, j) => j !== i));
+  };
 
   // Signed in (or tried to) with an account that isn't on the allowlist.
   if (account && notWhitelisted) {
@@ -316,12 +587,30 @@ export default function Studio() {
     );
   }
 
-  const tabs = isAdmin && (
+  const tabs = (
     <nav className="studio-tabs" role="tablist" aria-label="Studio sections">
       <button role="tab" aria-selected={tab === "studio"} onClick={() => openTab("studio")}>🏭 Studio</button>
-      <button role="tab" aria-selected={tab === "admin"} onClick={() => openTab("admin")}>🛡️ Admin</button>
+      <button role="tab" aria-selected={tab === "tokens"} onClick={() => openTab("tokens")}>🪙 My tokens{launches?.length ? ` (${launches.length})` : ""}</button>
+      {isAdmin && <button role="tab" aria-selected={tab === "admin"} onClick={() => openTab("admin")}>🛡️ Admin</button>}
     </nav>
   );
+
+  if (tab === "tokens") {
+    return (
+      <>
+        {tabs}
+        <MyTokens
+          account={session?.accountId ?? account}
+          launches={launches}
+          busy={busy !== null}
+          progress={busy === "relist" ? progress : null}
+          onReload={loadLaunches}
+          onListOnRhea={(ids) => relist(ids)}
+        />
+        {error && <p className="error">{error}</p>}
+      </>
+    );
+  }
 
   if (isAdmin && tab === "admin") {
     return (
@@ -396,8 +685,12 @@ export default function Studio() {
         ) : launches.length === 0 ? (
           <p className="muted">Nothing yeeted yet. Your tokens will show up here.</p>
         ) : (
+          <>
+          <p className="small">
+            <button className="link" onClick={() => openTab("tokens")}>Open the My tokens dashboard ({launches.length}) →</button>
+          </p>
           <ul className="my-launches">
-            {launches.map((l) => (
+            {launches.slice(0, 8).map((l) => (
               <li key={l.tokenId}>
                 <span className="dot" style={{ background: l.colors?.primary ?? "var(--pink)" }} />
                 <div className="ml-body">
@@ -415,7 +708,7 @@ export default function Studio() {
                       </a>
                     )}
                     {l.ownerId === account && (l.venue ?? "yeetpad") === "yeetpad" && (
-                      <button className="link" disabled={busy !== null} title="Send your tokens to the vault and list them on Rhea (you get the LP position)" onClick={() => relist(l.tokenId)}>
+                      <button className="link" disabled={busy !== null} title="Send your tokens to the vault and list them on Rhea (you get the LP position)" onClick={() => relist([l.tokenId])}>
                         {busy === "relist" ? "listing…" : "list on Rhea"}
                       </button>
                     )}
@@ -444,6 +737,12 @@ export default function Studio() {
               </li>
             ))}
           </ul>
+          {launches.length > 8 && (
+            <p className="small muted">
+              + {launches.length - 8} more in <button className="link" onClick={() => openTab("tokens")}>My tokens</button>
+            </p>
+          )}
+          </>
         )}
         {busy === "relist" && progress && <p className="muted small">{progress}</p>}
       </section>
@@ -466,57 +765,95 @@ export default function Studio() {
         <div className="row">
           <span className="muted small">How many?</span>
           <div className="count-pick" role="radiogroup" aria-label="number of ideas">
-            {Array.from({ length: MAX_BATCH }, (_, i) => i + 1).map((n) => (
-              <button key={n} role="radio" aria-checked={count === n} className={count === n ? "on" : ""} onClick={() => setCount(n)}>
+            {COUNT_PRESETS.map((n) => (
+              <button key={n} role="radio" aria-checked={count === n && !customCount} className={count === n && !customCount ? "on" : ""} onClick={() => (setCount(n), setCustomCount(""))}>
                 {n}
               </button>
             ))}
+            <input
+              type="number"
+              className={`count-custom${customCount ? " on" : ""}`}
+              min={1}
+              max={MAX_RUN}
+              placeholder="custom"
+              aria-label={`custom number of ideas (1-${MAX_RUN})`}
+              value={customCount}
+              onChange={(e) => {
+                setCustomCount(e.target.value);
+                if (e.target.value) setCount(clampRun(e.target.value));
+              }}
+              onBlur={() => customCount && setCustomCount(String(clampRun(customCount)))}
+            />
           </div>
-          <button
-            disabled={busy !== null || prompt.trim().length < 3}
-            onClick={() =>
-              run("generate", async () => {
-                const token = await authToken(account);
-                if (!token) return;
-                const r = await generate(prompt.trim(), account, token, count);
-                const list = r.ideas ?? [r.idea];
-                setIdeas(list);
-                setPicked(list.map(() => true));
-                setResult(null);
-                await refresh();
-              })
-            }
-          >
+          <button disabled={busy !== null || prompt.trim().length < 3} onClick={generateRun}>
             {busy === "generate" ? "Thinking…" : count > 1 ? `Generate ${count}` : "Generate"}
           </button>
+          {busy === "generate" && (
+            <button className="ghost" onClick={() => (genStop.current = true)}>Stop</button>
+          )}
         </div>
-
-        {ideas.length > 0 && (
-        <div className="idea-grid">
-        {ideas.map((idea, i) => (
-          <IdeaCard
-            key={i}
-            idea={idea}
-            picked={ideas.length > 1 ? picked[i] : undefined}
-            onPick={(v) => setPicked(picked.map((p, j) => (j === i ? v : p)))}
-            onTicker={(ticker) => setIdeas(ideas.map((x, j) => (j === i ? { ...x, ticker } : x)))}
-          />
-        ))}
-        </div>
-        )}
+        <p className="muted small">
+          {count} idea{count > 1 ? "s" : ""}
+          {aiCost ? ` ≈ ${formatNear(BigInt(aiCost) * BigInt(count))} NEAR of credits` : ""}
+          {count > MAX_BATCH ? ` · ${Math.ceil(count / MAX_BATCH)} requests of ${MAX_BATCH}, ${GEN_CONCURRENCY} at a time` : ""}
+          {genProgress && <> · <strong>{genProgress}</strong></>}
+        </p>
         {ideas.length === 0 && (
           <div className="idea-empty">
             <span aria-hidden="true">💡</span>
             <p>
-              <strong>Your ideas land here.</strong> Describe a vibe, pick how many (up to {MAX_BATCH}), and hit Generate. Each idea costs a tiny
+              <strong>Your ideas land here.</strong> Describe a vibe, pick how many (up to {MAX_RUN}), and hit Generate. Each idea costs a tiny
               bit of vault credit; you can tweak tickers before launching.
             </p>
           </div>
         )}
       </section>
+      {error && ideas.length === 0 && !lrun && <p className="error">{error}</p>}
+      </div>
+    </div>
 
-      {ideas.length > 0 && (
-        <section className="card s-launch">
+    {ideas.length > 0 && (
+      <section className="card s-ideas run-full">
+        <div className="row between">
+          <h2>Ideas · {chosen.length}/{ideas.length} selected</h2>
+          <div className="row">
+            <button className="ghost" onClick={() => setPicked(ideas.map(() => true))}>Select all</button>
+            <button className="ghost" onClick={() => setPicked(ideas.map(() => false))}>None</button>
+          </div>
+        </div>
+        {ideas.length <= CARD_MAX ? (
+          <div className="idea-grid">
+            {ideas.map((idea, i) => (
+              <IdeaCard
+                key={i}
+                idea={idea}
+                picked={ideas.length > 1 ? picked[i] : undefined}
+                onPick={(v) => setPicked((p) => p.map((x, j) => (j === i ? v : x)))}
+                onTicker={(ticker) => setIdeas((xs) => xs.map((x, j) => (j === i ? { ...x, ticker } : x)))}
+                onRemove={ideas.length > 1 ? () => removeIdea(i) : undefined}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="idea-rows">
+            {ideas.map((idea, i) => (
+              <IdeaRow
+                key={i}
+                idea={idea}
+                picked={picked[i] ?? false}
+                status={runStatus.get(idea.ticker)}
+                onPick={(v) => setPicked((p) => p.map((x, j) => (j === i ? v : x)))}
+                onTicker={(ticker) => setIdeas((xs) => xs.map((x, j) => (j === i ? { ...x, ticker } : x)))}
+                onRemove={() => removeIdea(i)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+    )}
+
+      {(ideas.length > 0 || lrun) && (
+        <section className="card s-launch run-full">
           <h2>4. Yeet it</h2>
           <div className="venue-pick" role="radiogroup" aria-label="List on">
             <span className="muted small">List on</span>
@@ -551,7 +888,7 @@ export default function Studio() {
           )}
           <p className="muted small">
             {listOn === "none" && (
-              <>Creates {chosen.length === 1 ? "a NEP-141 token" : `${chosen.length} NEP-141 tokens in one transaction`} owned by you, paid from your vault credit (a failed item is refunded).</>
+              <>Creates {chosen.length === 1 ? "a NEP-141 token" : chosen.length <= MAX_BATCH ? `${chosen.length} NEP-141 tokens in one transaction` : `${chosen.length} NEP-141 tokens in ${Math.ceil(chosen.length / MAX_BATCH)} transactions of ${MAX_BATCH}, one after another`} owned by you, paid from your vault credit (a failed item is refunded).</>
             )}
             {listOn === "rhea" && (
               <>
@@ -561,13 +898,13 @@ export default function Studio() {
             )}
             {listOn === "nearly" && (
               <>
-                Nearly's factory creates and lists the token; your wallet signs and pays each launch ({chosen.length > 1 ? "batched in one wallet prompt" : "one prompt"}).
+                Nearly's factory creates and lists the token; your wallet signs and pays each launch ({chosen.length > 1 ? `${walletPrompts} wallet approval${walletPrompts > 1 ? "s" : ""}, up to 10 launches each` : "one prompt"}).
                 Nearly locks the LP in its own locker and takes its trading fees.
               </>
             )}
             {listOn === "justhoot" && (
               <>
-                JustHoot creates the token and its Rhea pool; your wallet signs and pays the exact launch deposit ({chosen.length > 1 ? `batched, up to 10 per wallet prompt` : "one prompt"}).
+                JustHoot creates the token and its Rhea pool; your wallet signs and pays the exact launch deposit ({chosen.length > 1 ? `${walletPrompts} wallet approval${walletPrompts > 1 ? "s" : ""}, up to 10 launches each` : "one prompt"}).
                 JustHoot's pool creator holds the LP; you're the token's fee recipient. Tickers up to 10 characters. Description and socials appear on your
                 Yeetpad site page (linked on-chain as the token's reference), not in JustHoot's socials form.
               </>
@@ -586,6 +923,7 @@ export default function Studio() {
             </div>
           )}
           {q && q.listOn === listOn && (
+            <div className="cost-wrap">
             <table className="cost-table small">
               <tbody>
                 {q.items.map((it) => (
@@ -596,42 +934,56 @@ export default function Studio() {
                   </tr>
                 ))}
                 <tr className="total">
-                  <td>Total</td>
+                  <td>Total ({q.items.length})</td>
                   <td className="muted">{q.items[0]?.paidFrom === "wallet" ? "from your wallet" : "from vault credit"}</td>
                   <td className="num">~{formatNear(BigInt(q.total))} NEAR</td>
                 </tr>
               </tbody>
             </table>
+            </div>
           )}
           {q?.notes?.map((n) => (
             <p key={n} className="muted small">{n}</p>
           ))}
           {!q && session && qErr && <p className="muted small">Cost estimate unavailable: {qErr}</p>}
-          <button
-            disabled={busy !== null || chosen.length === 0}
-            onClick={() =>
-              run("launch", async () => {
-                const token = await authToken(account);
-                if (!token) return;
-                setProgress(listOn === "rhea" ? "Launching and listing on Rhea (about 10 s per token)…" : null);
-                try {
-                  if (listOn === "nearly") await launchNearly(token);
-                  else if (listOn === "justhoot") await launchJusthoot(token);
-                  else setResult(await launchBatch(account, chosen, token, listOn, rheaOpts));
-                } finally {
-                  setProgress(null);
-                }
-                await refresh();
-                await loadLaunches();
-              })
-            }
-          >
+          <div className="row">
+          <button disabled={busy !== null || chosen.length === 0} onClick={startLaunch}>
             {busy === "launch"
               ? "Launching…"
               : `${chosen.length > 1 ? `Launch ${chosen.length} tokens` : "Launch token"}${listOn === "rhea" ? " + list on Rhea" : listOn === "nearly" ? " on Nearly" : listOn === "justhoot" ? " on JustHoot" : ""}`}
           </button>
+          {busy === "launch" && lrun && (
+            <button className="ghost" onClick={() => (launchStop.current = true)} title="Stops after the chunk in flight">Stop after this chunk</button>
+          )}
+          {busy === null && lrunCounts && lrunCounts.left > 0 && (
+            <button onClick={resumeRun}>Resume ({lrunCounts.left} left)</button>
+          )}
+          {busy === null && lrunCounts && lrunCounts.failed > 0 && (
+            <button className="ghost" onClick={retryFailed}>Retry failed ({lrunCounts.failed})</button>
+          )}
+          </div>
+          {lrun && lrunCounts && (
+            <div className="run-status">
+              <p>
+                <strong>Launched {lrunCounts.done}/{lrunCounts.total}</strong>
+                {lrunCounts.listed > 0 && <> · {lrunCounts.listed} listed</>}
+                {lrunCounts.failed > 0 && <> · {lrunCounts.failed} failed</>}
+                {lrunCounts.left > 0 && <> · {lrunCounts.left} to go</>} <span className="muted small">({lrun.venue === "none" ? "token only" : lrun.venue}, started {fmtWhen(lrun.startedAt)})</span>{" "}
+                {busy === null && lrunCounts.left === 0 && (
+                  <button className="link" onClick={() => setRun(null)}>clear</button>
+                )}
+              </p>
+              <progress max={lrunCounts.total} value={lrunCounts.done + lrunCounts.failed} />
+              <ul className="run-items">
+                {lrun.items.map((it) => (
+                  <RunRow key={it.idea.ticker} it={it} />
+                ))}
+              </ul>
+            </div>
+          )}
           {progress && <p className="muted small">{progress}</p>}
-          {result && (
+          {error && <p className="error">{error}</p>}
+          {result && !lrun && (
             <div className="result">
               <ul className="launch-results">
                 {result.results.map((r) => (
@@ -667,12 +1019,74 @@ export default function Studio() {
           )}
         </section>
       )}
-
-
-      {error && <p className="error">{error}</p>}
-      </div>
-    </div>
     </>
+  );
+}
+
+const STATUS_LABEL: Record<RunItem["status"], string> = {
+  pending: "⏳ waiting",
+  sending: "🚀 launching",
+  signing: "✍️ in wallet",
+  ok: "✅ ok",
+  listed: "✅ listed",
+  failed: "❌ failed",
+};
+
+function RunRow({ it }: { it: RunItem }) {
+  const done = it.status === "ok" || it.status === "listed";
+  return (
+    <li className={`run-${it.status}`}>
+      <span className="run-st">{STATUS_LABEL[it.status]}</span> <strong>${it.idea.ticker.toUpperCase()}</strong>{" "}
+      {done && <a href={`/t/${it.slug ?? it.idea.ticker}`}>site</a>}
+      {it.listingUrl && (
+        <>
+          {" "}· <a href={it.listingUrl} target="_blank" rel="noreferrer">pool ↗</a>
+        </>
+      )}
+      {it.status === "failed" && <span className="muted small"> {it.error ?? "failed"}{/refund/i.test(it.error ?? "") ? "" : " (refunded)"}</span>}
+      {it.listingError && <span className="muted small"> listing: {it.listingError}</span>}
+    </li>
+  );
+}
+
+/** Light row for big runs: small SVG icon, name, editable ticker, tagline; no heavy card preview. */
+function IdeaRow({
+  idea,
+  picked,
+  status,
+  onPick,
+  onTicker,
+  onRemove,
+}: {
+  idea: LaunchIdea;
+  picked: boolean;
+  status?: RunItem["status"];
+  onPick: (v: boolean) => void;
+  onTicker: (t: string) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className={`idea-row${picked ? "" : " off"}`}>
+      <input type="checkbox" checked={picked} onChange={(e) => onPick(e.target.checked)} aria-label={`launch ${idea.name}`} />
+      <img src={tokenIconDataUri(idea)} alt="" width={36} height={36} loading="lazy" />
+      <div className="ir-body">
+        <div className="ir-top">
+          <strong className="ir-name" title={idea.description}>{idea.name}</strong>
+          <span className="ir-tk">
+            $
+            <input
+              value={idea.ticker}
+              maxLength={16}
+              onChange={(e) => onTicker(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16))}
+              aria-label={`ticker for ${idea.name}`}
+            />
+          </span>
+          {status && <span className="small">{STATUS_LABEL[status]}</span>}
+        </div>
+        <span className="ir-tag muted small">{idea.tagline}</span>
+      </div>
+      <button className="link ir-x" onClick={onRemove} aria-label={`remove ${idea.name}`} title="Remove">✕</button>
+    </div>
   );
 }
 
@@ -732,11 +1146,13 @@ function IdeaCard({
   onTicker,
   picked,
   onPick,
+  onRemove,
 }: {
   idea: LaunchIdea;
   onTicker: (t: string) => void;
   picked?: boolean;
   onPick: (v: boolean) => void;
+  onRemove?: () => void;
 }) {
   const c = idea.colors;
   const pillText = readable(c.background, c.accent, 4.5) ? c.background : readable("#1b1433", c.accent, 4.5) ? "#1b1433" : "#ffffff";
@@ -770,6 +1186,11 @@ function IdeaCard({
         {Object.entries(c).map(([k, v]) => (
           <span key={k} title={`${k} ${v}`} style={{ background: v }} />
         ))}
+        {onRemove && (
+          <button className="link idea-x" style={{ color: c.text, marginLeft: "auto" }} onClick={onRemove} aria-label={`remove ${idea.name}`}>
+            remove
+          </button>
+        )}
       </div>
     </div>
   );

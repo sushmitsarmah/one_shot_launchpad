@@ -28,6 +28,7 @@
     "build:web:mainnet": "cd apps/studio-web && PUBLIC_NETWORK=mainnet PUBLIC_SITE_URL=https://yeetpad.fun bun run build",
     "deploy:web:mainnet": "bun run build:web:mainnet && npx -y wrangler@4.86.0 deploy --env mainnet && bun run build:web",
     "deploy:mainnet": "bun scripts/deploy-mainnet.ts",
-    "regression:testnet": "bun scripts/regression-testnet.ts"
+    "regression:testnet": "bun scripts/regression-testnet.ts",
+    "test:web": "cd apps/studio-web && bun test src"
   }
 }

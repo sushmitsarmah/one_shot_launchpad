@@ -65,12 +65,15 @@ export type SiteConfig = z.infer<typeof SiteConfig>;
 
 // ---------- API contracts ----------
 
-export const MAX_BATCH = 5;
+import { MAX_BATCH, MAX_RUN } from "./limits";
+export { MAX_BATCH, MAX_RUN };
 
 export const GenerateRequest = z.object({
   prompt: z.string().min(3).max(1000),
-  /** How many distinct ideas to generate (1-5); each one is charged. */
+  /** How many distinct ideas this request generates (1-MAX_BATCH); each one is charged. Runs of up to MAX_RUN loop client-side. */
   count: z.number().int().min(1).max(MAX_BATCH).optional(),
+  /** Names/tickers already used earlier in this run, so the LLM avoids them (short; kept small for tokens). */
+  avoid: z.array(z.string().max(40)).max(MAX_RUN * 2).optional(),
   /** Optional: the account comes from the session; if sent it must match it. */
   ownerWallet: NearAccountId.optional(),
 });
@@ -172,6 +175,8 @@ export const LaunchedToken = z.object({
   /** Where it trades: our factory token (yeetpad), listed on Rhea, or a Nearly token. */
   venue: z.enum(["yeetpad", "rhea", "nearly", "justhoot"]).optional(),
   venueUrl: z.string().url().nullable().optional(),
+  /** Launch transaction (from the stored site config, when known). */
+  txHash: z.string().nullable().optional(),
 });
 export type LaunchedToken = z.infer<typeof LaunchedToken>;
 
@@ -374,3 +379,4 @@ export const JusthootFinalizeResponse = NearlyFinalizeResponse;
 export type JusthootFinalizeResponse = NearlyFinalizeResponse;
 
 export { tokenIconDataUri, tokenIconSvg } from "./icon";
+export * from "./run";
