@@ -16,7 +16,7 @@ import type {
   RheaOptions,
   SiteConfig,
 } from "@osl/schema";
-import { MAX_BATCH, TOKENS_DELETE_MAX, chunk, pool, type TokensActionResult } from "@osl/schema";
+import { INTENTS_TOKENS_MAX, MAX_BATCH, TOKENS_DELETE_MAX, chunk, pool, type IntentsConfig, type TokensActionResult } from "@osl/schema";
 import { API_URL } from "./config";
 import { NotWhitelistedError, clearSession, isNotWhitelisted } from "./auth";
 
@@ -171,6 +171,21 @@ export async function tokensAction(kind: "delete" | "restore", tickers: string[]
   for (const part of chunk(tickers, TOKENS_DELETE_MAX)) {
     try {
       out.push(...(await post<{ results: TokensActionResult[] }>(`/api/tokens/${kind}`, { tokens: part }, token)).results);
+    } catch (e) {
+      const r = (e as ApiError).body?.results as TokensActionResult[] | undefined;
+      if (r?.length) out.push(...r);
+      else throw e;
+    }
+  }
+  return out;
+}
+
+/** Turns the NEAR Intents widget on/off for many tokens (creator-only), INTENTS_TOKENS_MAX per request. */
+export async function tokensIntents(tickers: string[], intents: IntentsConfig, token: string): Promise<TokensActionResult[]> {
+  const out: TokensActionResult[] = [];
+  for (const part of chunk(tickers, INTENTS_TOKENS_MAX)) {
+    try {
+      out.push(...(await post<{ results: TokensActionResult[] }>("/api/tokens/intents", { tokens: part, intents }, token)).results);
     } catch (e) {
       const r = (e as ApiError).body?.results as TokensActionResult[] | undefined;
       if (r?.length) out.push(...r);

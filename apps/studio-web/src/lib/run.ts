@@ -127,13 +127,15 @@ export interface IdeasDraft {
   ideas: LaunchIdea[];
   originals: LaunchIdea[];
   picked: boolean[];
+  /** Per-idea "enable NEAR Intents on its page after launch". */
+  intents?: boolean[];
 }
 export function loadDraft(account: string): IdeasDraft | null {
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null") as IdeasDraft | null;
     if (!d || d.v !== 1 || d.account !== account || !Array.isArray(d.ideas) || !d.ideas.length) return null;
     const n = d.ideas.length;
-    return { ...d, picked: Array.from({ length: n }, (_, i) => d.picked?.[i] ?? true), originals: Array.from({ length: n }, (_, i) => d.originals?.[i] ?? d.ideas[i]) };
+    return { ...d, picked: Array.from({ length: n }, (_, i) => d.picked?.[i] ?? true), intents: Array.from({ length: n }, (_, i) => d.intents?.[i] === true), originals: Array.from({ length: n }, (_, i) => d.originals?.[i] ?? d.ideas[i]) };
   } catch {
     return null;
   }
@@ -147,4 +149,26 @@ export function saveDraft(account: string, d: Omit<IdeasDraft, "v" | "account">)
     }
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ v: 1, account, ...d }));
   } catch {}
+}
+
+// ---- NEAR Intents to switch on once these tickers are launched (survives reloads / wallet redirects) ----
+export const INTENTS_PENDING_KEY = "yeetpad.intentsPending";
+export function loadIntentsPending(account: string): string[] {
+  try {
+    const d = JSON.parse(localStorage.getItem(INTENTS_PENDING_KEY) ?? "null") as { account: string; tickers: string[] } | null;
+    return d?.account === account && Array.isArray(d.tickers) ? d.tickers : [];
+  } catch {
+    return [];
+  }
+}
+export function saveIntentsPending(account: string, tickers: string[]) {
+  try {
+    if (tickers.length) localStorage.setItem(INTENTS_PENDING_KEY, JSON.stringify({ account, tickers: [...new Set(tickers)].slice(-500) }));
+    else localStorage.removeItem(INTENTS_PENDING_KEY);
+  } catch {}
+}
+/** Pending tickers that are now launched by `account` and don't have NEAR Intents on yet. */
+export function intentsToApply(pending: string[], launches: { ticker: string; ownerId?: string; intents?: { enabled: boolean } | null; deletedAt?: number | null }[], account: string) {
+  const want = new Set(pending);
+  return launches.filter((l) => want.has(l.ticker) && (l.ownerId ?? account) === account && !l.intents?.enabled && !l.deletedAt).map((l) => l.ticker);
 }

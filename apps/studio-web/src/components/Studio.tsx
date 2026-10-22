@@ -16,6 +16,7 @@ import {
   tokenIconDataUri,
   type BatchLaunchResponse,
   type LaunchedToken,
+  type IntentsConfig,
   type LaunchIdea,
   type QuoteResponse,
   type SessionResponse,
@@ -24,9 +25,10 @@ import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, friendlyWalletError, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
 import { viewCall } from "../lib/near";
 import { getVaultBalance, txFailure } from "../lib/near";
+import { tokensIntents } from "../lib/api";
 import { classifyPull, minsFor, quotePosition, removablePositions, removeLiquidityCall, UNPROTECTED, type DclPosition, type PullItem, type PullResult } from "../lib/dcl";
 import { aiComputeCost, ApiError, tokensAction, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
-import { applyResults, isDone, loadDraft, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveRun, type LaunchRun, type RunItem } from "../lib/run";
+import { applyResults, intentsToApply, isDone, loadDraft, loadIntentsPending, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveIntentsPending, saveRun, type LaunchRun, type RunItem } from "../lib/run";
 import MyTokens from "./MyTokens";
 import { webpIcons } from "../lib/icon";
 import { DCL_CONTRACT, EXPLORER_BASE, NETWORK } from "../lib/config";
@@ -35,7 +37,7 @@ import { WaitlistForm } from "./WaitlistForm";
 import Admin from "./Admin";
 import { VAULT_CONTRACT } from "../lib/config";
 
-type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist" | "delete";
+type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist" | "delete" | "intents";
 type Tab = "studio" | "tokens" | "admin";
 const COUNT_PRESETS = [1, 5, 10, 25, 50, 100];
 /** Ideas list switches from full cards to light rows above this many. */
@@ -56,9 +58,12 @@ export default function Studio() {
   const [lrun, setLrun] = useState<LaunchRun | null>(null);
   const runRef = useRef<LaunchRun | null>(null);
   const launchStop = useRef(false);
+  const intentsDefault = useRef(false);
   const [aiCost, setAiCost] = useState<string | null>(null);
   const [ideas, setIdeas] = useState<LaunchIdea[]>([]);
   const [picked, setPicked] = useState<boolean[]>([]);
+  /** Per idea: switch the NEAR Intents widget on for its page right after launch. */
+  const [intentsOn, setIntentsOn] = useState<boolean[]>([]);
   /** As generated (for "Reset to original"); parallel to `ideas`. */
   const [originals, setOriginals] = useState<LaunchIdea[]>([]);
   const [editing, setEditing] = useState<Set<number>>(new Set());
@@ -199,15 +204,36 @@ export default function Studio() {
     if (d && ideasRef.current.length === 0) {
       setIdeas(d.ideas);
       setPicked(d.picked);
+      setIntentsOn(d.intents ?? []);
       setOriginals(d.originals);
       if (d.prompt) setPrompt(d.prompt);
     }
   }, [account]);
   useEffect(() => {
     if (!account) return;
-    const t = setTimeout(() => saveDraft(account, { prompt, ideas, picked, originals }), 300);
+    const t = setTimeout(() => saveDraft(account, { prompt, ideas, picked, originals, intents: intentsOn }), 300);
     return () => clearTimeout(t);
-  }, [account, prompt, ideas, picked, originals]);
+  }, [account, prompt, ideas, picked, originals, intentsOn]);
+
+  // NEAR Intents chosen before launch: switch it on for those tokens once they show up in My tokens
+  // (works after reloads and redirect wallets too; pending tickers live in localStorage).
+  useEffect(() => {
+    if (!account || !launches || !session?.token) return;
+    const pending = loadIntentsPending(account);
+    const todo = intentsToApply(pending, launches, account);
+    if (!todo.length) return;
+    tokensIntents(todo, { enabled: true, mode: "both", tipAsset: "usdc" }, session.token)
+      .then((res) => {
+        const ok = new Set(res.filter((r) => r.ok).map((r) => r.ticker));
+        saveIntentsPending(account, loadIntentsPending(account).filter((t) => !ok.has(t)));
+        if (ok.size) {
+          setNotice(`NEAR Intents is on for ${ok.size} new token page${ok.size > 1 ? "s" : ""}.`);
+          void loadLaunches();
+        }
+      })
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, launches, session?.token]);
 
   // A run left over from a reload / redirect: show it, and mark items that did launch (from My launches) as done.
   useEffect(() => {
@@ -408,6 +434,24 @@ export default function Studio() {
         await refresh();
       }
     });
+  /** NEAR Intents widget on/off (and mode) for many token pages; API calls of up to 50, creator-only. */
+  const setIntentsFor = (tickers: string[], cfg: IntentsConfig) =>
+    run("intents", async () => {
+      setNotice(null);
+      const token = await authToken(account!);
+      if (!token) return;
+      setProgress(`${cfg.enabled ? "Enabling" : "Disabling"} NEAR Intents on ${tickers.length} page${tickers.length > 1 ? "s" : ""}…`);
+      try {
+        const res = await tokensIntents(tickers, cfg, token);
+        const bad = res.filter((r) => !r.ok);
+        const ok = res.length - bad.length;
+        setNotice(`NEAR Intents ${cfg.enabled ? `on (${cfg.mode === "both" ? "buy + tip" : cfg.mode})` : "off"} for ${ok} page${ok === 1 ? "" : "s"}.`);
+        if (bad.length) setError(`Not changed: ${bad.map((b) => `${b.ticker.toUpperCase()} (${b.note})`).join(", ")}`);
+        await loadLaunches();
+      } finally {
+        setProgress(null);
+      }
+    });
   const restoreTokens = (tickers: string[]) =>
     run("delete", async () => {
       setNotice(null);
@@ -544,6 +588,8 @@ export default function Studio() {
         if (bal < need) throw new Error(`This run needs ~${formatNear(need)} NEAR of credits; you have ${formatNear(bal)}. Top up at least ${formatNear(need - bal)} NEAR first.`);
       }
       setResult(null);
+      const withIntents = ideas.filter((x, i) => picked[i] && intentsOn[i]).map((x) => x.ticker);
+      if (withIntents.length) saveIntentsPending(account!, [...loadIntentsPending(account!), ...withIntents]);
       setRun(newRun(account!, listOn, chosen, rheaOpts));
       await continueRun(token);
     });
@@ -574,6 +620,7 @@ export default function Studio() {
       genStop.current = false;
       setIdeas([]);
       setPicked([]);
+      setIntentsOn([]);
       setOriginals([]);
       setEditing(new Set());
       ideasRef.current = [];
@@ -622,6 +669,7 @@ export default function Studio() {
               ideasRef.current = [...ideasRef.current, ...fresh];
               setIdeas(ideasRef.current);
               setPicked((p) => [...p, ...fresh.map(() => true)]);
+              setIntentsOn((p) => [...p, ...fresh.map(() => intentsDefault.current)]);
               setOriginals((o) => [...o, ...fresh]);
               setGenProgress(`Generated ${got}/${n}…`);
             },
@@ -715,6 +763,7 @@ export default function Studio() {
   const removeIdea = (i: number) => {
     setIdeas((xs) => xs.filter((_, j) => j !== i));
     setPicked((p) => p.filter((_, j) => j !== i));
+    setIntentsOn((p) => p.filter((_, j) => j !== i));
     setOriginals((o) => o.filter((_, j) => j !== i));
     setEditing((e) => new Set([...e].filter((j) => j !== i).map((j) => (j > i ? j - 1 : j))));
   };
@@ -803,7 +852,7 @@ export default function Studio() {
           account={session?.accountId ?? account}
           launches={launches}
           busy={busy !== null}
-          progress={busy === "relist" || busy === "delete" ? progress : null}
+          progress={busy === "relist" || busy === "delete" || busy === "intents" ? progress : null}
           onReload={loadLaunches}
           onListOnRhea={(ids) => relist(ids)}
           onDelete={deleteTokens}
@@ -812,6 +861,7 @@ export default function Studio() {
           notice={notice}
           lpResults={lpResults}
           onRetryLiquidity={retryLiquidity}
+          onSetIntents={setIntentsFor}
           onDismissLp={() => setLpResults(null)}
         />
         {error && <p className="error">{error}</p>}
@@ -1026,6 +1076,20 @@ export default function Studio() {
           <div className="row">
             <button className="ghost" onClick={() => setPicked(ideas.map(() => true))}>Select all</button>
             <button className="ghost" onClick={() => setPicked(ideas.map(() => false))}>None</button>
+            <label className="pick small intents-all" title="Adds a NEAR Intents widget to each token page: visitors can buy or tip with BTC, ETH, SOL, USDC… (settles on NEAR mainnet). Change it per token later in My tokens.">
+              <input
+                type="checkbox"
+                checked={ideas.length > 0 && ideas.every((_, i) => intentsOn[i])}
+                ref={(el) => {
+                  if (el) el.indeterminate = ideas.some((_, i) => intentsOn[i]) && !ideas.every((_, i) => intentsOn[i]);
+                }}
+                onChange={(e) => {
+                  intentsDefault.current = e.target.checked;
+                  setIntentsOn(ideas.map(() => e.target.checked));
+                }}
+              />{" "}
+              Enable NEAR Intents for all
+            </label>
           </div>
         </div>
         <p className="muted small">
@@ -1045,6 +1109,8 @@ export default function Studio() {
                   onRemove={ideas.length > 1 ? () => removeIdea(i) : undefined}
                   onEdit={() => toggleEdit(i)}
                   bad={hasErrors(ideaErrs[i] ?? {})}
+                  intents={intentsOn[i] ?? false}
+                  onIntents={(v) => setIntentsOn((p) => ideas.map((_, j) => (j === i ? v : (p[j] ?? false))))}
                 />
                 {editing.has(i) && <IdeaEditor {...ideaProps(idea, i)} />}
               </div>
@@ -1060,6 +1126,8 @@ export default function Studio() {
                 status={runStatus.get(idea.ticker)}
                 onPick={(v) => setPicked((p) => p.map((x, j) => (j === i ? v : x)))}
                 onRemove={() => removeIdea(i)}
+                intents={intentsOn[i] ?? false}
+                onIntents={(v) => setIntentsOn((p) => ideas.map((_, j) => (j === i ? v : (p[j] ?? false))))}
               />
             ))}
           </div>
@@ -1330,6 +1398,8 @@ function IdeaCard({
   onRemove,
   onEdit,
   bad,
+  intents,
+  onIntents,
 }: {
   idea: LaunchIdea;
   onTicker: (t: string) => void;
@@ -1338,6 +1408,8 @@ function IdeaCard({
   onRemove?: () => void;
   onEdit?: () => void;
   bad?: boolean;
+  intents?: boolean;
+  onIntents?: (v: boolean) => void;
 }) {
   const c = idea.colors;
   const pillText = readable(c.background, c.accent, 4.5) ? c.background : readable("#1b1433", c.accent, 4.5) ? "#1b1433" : "#ffffff";
@@ -1367,6 +1439,11 @@ function IdeaCard({
         <em>{idea.tagline}</em>
       </p>
       <p>{idea.description}</p>
+      {onIntents && (
+        <label className="pick small idea-intents" title="NEAR Intents widget on this token's page: buy or tip with any crypto (mainnet)">
+          <input type="checkbox" checked={!!intents} onChange={(e) => onIntents(e.target.checked)} /> NEAR Intents on its page
+        </label>
+      )}
       <div className="swatches">
         {Object.entries(c).map(([k, v]) => (
           <span key={k} title={`${k} ${v}`} style={{ background: v }} />
@@ -1456,8 +1533,8 @@ const slugPreview = (name: string) =>
   name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
 
 /** Light row for big runs: small SVG icon (re-rendered from the edited ticker/colours), name, ticker, tagline; ✎ expands the editor. */
-function IdeaRow(props: IdeaEditProps & { picked: boolean; status?: RunItem["status"]; onPick: (v: boolean) => void; onRemove: () => void }) {
-  const { idea, picked, status, errors, editing, edited, onPick, onRemove, onToggleEdit, onChange } = props;
+function IdeaRow(props: IdeaEditProps & { picked: boolean; status?: RunItem["status"]; onPick: (v: boolean) => void; onRemove: () => void; intents: boolean; onIntents: (v: boolean) => void }) {
+  const { idea, picked, status, errors, editing, edited, onPick, onRemove, onToggleEdit, onChange, intents, onIntents } = props;
   const bad = hasErrors(errors);
   return (
     <div className={`idea-row${picked ? "" : " off"}${editing ? " open" : ""}${bad ? " bad" : ""}`}>
@@ -1477,6 +1554,9 @@ function IdeaRow(props: IdeaEditProps & { picked: boolean; status?: RunItem["sta
         {bad && !editing && <span className="err-inline small">⚠ {Object.entries(errors).map(([f, m]) => `${f}: ${m}`).join("; ")}</span>}
       </div>
       <div className="ir-act">
+        <label className="pick small ir-intents" title="NEAR Intents widget on this token's page">
+          <input type="checkbox" checked={intents} onChange={(e) => onIntents(e.target.checked)} aria-label={`NEAR Intents for ${idea.name}`} /> Intents
+        </label>
         <button className="link ir-x" onClick={onToggleEdit} aria-expanded={editing} aria-label={`edit ${idea.name}`} title="Edit">{editing ? "▴" : "✎"}</button>
         <button className="link ir-x" onClick={onRemove} aria-label={`remove ${idea.name}`} title="Remove">✕</button>
       </div>

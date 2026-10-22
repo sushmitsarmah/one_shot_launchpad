@@ -54,3 +54,17 @@ describe("ideas draft (edits survive reload / redirect)", () => {
     expect(loadDraft("me.testnet")).toBeNull();
   });
 });
+
+import { intentsToApply } from "./run";
+describe("NEAR Intents chosen before launch", () => {
+  test("applies only to launched, own, not-yet-enabled, live tokens", () => {
+    const ls = [
+      { ticker: "aa", ownerId: "me.testnet" },
+      { ticker: "bb", ownerId: "me.testnet", intents: { enabled: true } },
+      { ticker: "cc", ownerId: "other.testnet" },
+      { ticker: "dd", ownerId: "me.testnet", deletedAt: 1 },
+      { ticker: "ee", ownerId: "me.testnet" },
+    ];
+    expect(intentsToApply(["aa", "bb", "cc", "dd", "zz"], ls, "me.testnet")).toEqual(["aa"]);
+  });
+});

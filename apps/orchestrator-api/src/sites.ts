@@ -3,7 +3,7 @@
  * Worker; an in-memory map for the local Bun server and tests. A compact copy also lives on-chain
  * in the factory registry (`site` field), used if KV has no entry.
  */
-import { SiteConfig, slugify, type LaunchIdea } from "@osl/schema";
+import { IntentsConfig, SiteConfig, slugify, type LaunchIdea } from "@osl/schema";
 import { config } from "./config";
 
 export interface KVListResult {
@@ -225,4 +225,16 @@ export async function restoreTakedown(ticker: string, kv: KVLike = store) {
     const { takenDown: _t, ...site } = found.site;
     await saveSite(found.ticker, site);
   }
+}
+
+// ---------- NEAR Intents widget settings (intents:<ticker>; works for KV and chain-only token pages) ----------
+const intentsKey = (ticker: string) => `intents:${ticker}`;
+export async function getIntents(ticker: string, kv: KVLike = store): Promise<IntentsConfig | null> {
+  const raw = await kv.get(intentsKey(ticker));
+  if (!raw) return null;
+  const p = IntentsConfig.safeParse(JSON.parse(raw));
+  return p.success ? p.data : null;
+}
+export async function setIntents(ticker: string, cfg: IntentsConfig, kv: KVLike = store) {
+  await kv.put(intentsKey(ticker), JSON.stringify(cfg));
 }

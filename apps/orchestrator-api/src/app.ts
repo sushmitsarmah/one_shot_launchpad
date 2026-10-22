@@ -23,6 +23,8 @@ import {
   type GenerateResponse,
   type LaunchResponse,
   type Listing,
+  IntentsQuoteRequest,
+  TokensIntentsRequest,
   type RheaOptions,
   JusthootFinalizeRequest,
   JusthootPrepareRequest,
@@ -40,6 +42,7 @@ import {
 } from "@osl/schema";
 import { buildListParams, computePoints, listingCost, poolIdFor, rheaPoolUrl } from "./rhea";
 import { config } from "./config";
+import { DEPOSIT_ADDRESS_RE, oneClickQuote, oneClickStatus, oneClickTokens, planQuote, shapeQuote } from "./intents";
 import { generateIdeas } from "./llm";
 import { tokenIconDataUri } from "./icon";
 import {
@@ -55,7 +58,7 @@ import {
   referenceJson,
   sha256Base64,
 } from "./justhoot";
-import { buildSiteConfig, claimSlug, compactSite, findSite, getSite, getTakedown, getViews, kvStore, putSite, restoreTakedown, saveSite, siteStoreKind, siteUrl, takeDown } from "./sites";
+import { buildSiteConfig, claimSlug, compactSite, findSite, getIntents, getSite, getTakedown, setIntents, getViews, kvStore, putSite, restoreTakedown, saveSite, siteStoreKind, siteUrl, takeDown } from "./sites";
 import {
   WAITLIST_MAX_BODY,
   addToWaitlist,
@@ -706,6 +709,29 @@ async function tokensAction(c: import("hono").Context<Env>, kind: "delete" | "re
 app.post("/api/tokens/delete", requireSession, requireAllowed, (c) => tokensAction(c, "delete"));
 app.post("/api/tokens/restore", requireSession, requireAllowed, (c) => tokensAction(c, "restore"));
 
+/** Turns the NEAR Intents widget on/off (and sets its mode) for many token pages at once. Creator or admin. */
+app.post("/api/tokens/intents", requireSession, requireAllowed, async (c) => {
+  const body = TokensIntentsRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
+  const { tokens, intents } = body.data;
+  if (intents.recipient && config.networkId === "mainnet" && /\.testnet$/.test(intents.recipient))
+    return c.json({ error: "tips need a NEAR mainnet account" }, 400);
+  const results: TokensActionResult[] = [];
+  let forbidden = 0;
+  for (const ticker of [...new Set(tokens)]) {
+    const a = await tokenAccess(ticker, c.var.account);
+    if (!a.ok) {
+      if (a.status === 403) forbidden++;
+      results.push({ ticker, ok: false, note: a.note });
+      continue;
+    }
+    await setIntents(ticker, intents);
+    results.push({ ticker, ok: true });
+  }
+  const status = results.some((r) => r.ok) ? 200 : forbidden ? 403 : 404;
+  return c.json({ results, ...(status !== 200 ? { error: results[0]?.note ?? "nothing changed" } : {}) }, status);
+});
+
 // ---------- whitelist (waitlist) ----------
 /**
  * Join the waitlist. Public, idempotent, soft rate-limited per IP. Stored as `waitlist:<account>` in the
@@ -786,7 +812,8 @@ app.get("/api/site/:id", async (c) => {
   if (td) return c.json({ error: "This token page was taken down by its creator", code: "taken_down", takenDownAt: td.at }, 410);
   if (found) {
     const kv = found.site;
-    return c.json({ source: "kv", siteConfig: kv, siteUrl: siteUrl(kv.slug ?? id), views: await getViews(found.ticker) });
+    const extra = await pageExtras(found.ticker);
+    return c.json({ source: "kv", siteConfig: { ...kv, ...(extra.intents ? { intents: extra.intents } : {}) }, siteUrl: siteUrl(kv.slug ?? id), views: await getViews(found.ticker), ...extra });
   }
   const ticker = id;
   if (!Ticker.safeParse(ticker).success) return c.json({ error: "no such token" }, 404);
@@ -808,7 +835,75 @@ app.get("/api/site/:id", async (c) => {
       launchedAt: Number(rec.created_at_ms),
     },
   });
-  return c.json({ source: "chain", siteConfig, siteUrl: siteUrl(ticker) });
+  const extra = await pageExtras(ticker);
+  return c.json({ source: "chain", siteConfig: { ...siteConfig, ...(extra.intents ? { intents: extra.intents } : {}) }, siteUrl: siteUrl(ticker), ...extra });
+});
+
+/** For the token page: NEAR Intents settings (null = off), the network, and the Rhea DCL pool to swap in (buy mode). */
+async function pageExtras(ticker: string) {
+  const intents = await getIntents(ticker).catch(() => null);
+  const l = intents?.enabled ? await getListing(ticker).catch(() => null) : null;
+  return {
+    intents: intents?.enabled ? intents : null,
+    network: config.networkId,
+    rhea: l?.ok && l.venue === "rhea" && l.poolId ? { dcl: config.dclContract, wnear: config.wnearContract, poolId: l.poolId, url: l.url } : null,
+  };
+}
+
+// ---------- NEAR Intents (1Click) for token pages ----------
+const oneClick = () => ({ baseUrl: config.oneClickBaseUrl, jwt: config.oneClickJwt });
+
+/** Supported pay-with assets (1Click /v0/tokens, cached). */
+app.get("/api/intents/tokens", async (c) => {
+  try {
+    const tokens = await oneClickTokens(oneClick());
+    c.header("cache-control", "public, max-age=300");
+    return c.json({ tokens, network: config.networkId, settlesOn: "mainnet" });
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 502);
+  }
+});
+
+/**
+ * Quote for a token page's widget. The server picks the destination (tips: the creator; buy: wNEAR to the
+ * visitor's account), never adds app fees, and off mainnet only returns price-only (dry) quotes.
+ */
+app.post("/api/intents/quote", async (c) => {
+  const body = IntentsQuoteRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
+  const id = body.data.site.toLowerCase();
+  if (!SITE_ID_RE.test(id)) return c.json({ error: "invalid ticker or slug" }, 400);
+  const found = await findSite(id);
+  const ticker = found?.ticker ?? id;
+  if (await getTakedown(ticker)) return c.json({ error: "This token page was taken down", code: "taken_down" }, 410);
+  const owner = found?.site.ownerWallet ?? (await getTokenRecord(ticker).catch(() => null))?.owner_id;
+  if (!owner) return c.json({ error: "no such token" }, 404);
+  let tokens;
+  try {
+    tokens = await oneClickTokens(oneClick());
+  } catch (e) {
+    return c.json({ error: `NEAR Intents is unreachable: ${(e as Error).message}` }, 502);
+  }
+  if (!tokens.some((t) => t.assetId === body.data.originAsset)) return c.json({ error: "that asset isn't supported by NEAR Intents" }, 400);
+  const plan = planQuote(body.data, await getIntents(ticker), owner, config.networkId === "mainnet");
+  if (!plan.ok) return c.json({ error: plan.error }, plan.status);
+  const r = await oneClickQuote(oneClick(), plan.body).catch((e) => ({ ok: false, status: 502, j: { message: (e as Error).message } }));
+  if (!r.ok) return c.json({ error: `NEAR Intents: ${r.j?.message ?? `HTTP ${r.status}`}` }, r.status >= 500 ? 502 : 400);
+  try {
+    return c.json(shapeQuote(r.j, plan.dry, plan.preview));
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 502);
+  }
+});
+
+/** Swap status for a deposit address that 1Click issued (proxied /v0/status). */
+app.get("/api/intents/status", async (c) => {
+  const addr = c.req.query("depositAddress") ?? "";
+  const memo = c.req.query("depositMemo") || undefined;
+  if (!DEPOSIT_ADDRESS_RE.test(addr) || (memo && !/^[A-Za-z0-9._:\-]{1,128}$/.test(memo))) return c.json({ error: "invalid deposit address" }, 400);
+  const r = await oneClickStatus(oneClick(), addr, memo).catch((e) => ({ ok: false as const, status: 502, error: (e as Error).message }));
+  if (!r.ok) return c.json({ error: r.error }, r.status === 404 ? 404 : 502);
+  return c.json(r);
 });
 
 /** Creator settings for a token site. Owner-only: the session account must be the site's ownerWallet. */
@@ -833,8 +928,9 @@ const getListing = async (ticker: string): Promise<Listing | null> => {
 };
 
 const withTakedown = async (l: LaunchedToken): Promise<LaunchedToken> => {
-  const td = await getTakedown(l.ticker);
-  return td ? { ...l, deletedAt: td.at, ...(td.byAdmin ? { deletedByAdmin: true } : {}) } : l;
+  const [td, intents] = await Promise.all([getTakedown(l.ticker), getIntents(l.ticker).catch(() => null)]);
+  const withIntents = intents ? { ...l, intents } : l;
+  return td ? { ...withIntents, deletedAt: td.at, ...(td.byAdmin ? { deletedByAdmin: true } : {}) } : withIntents;
 };
 
 const toLaunched = async (r: TokenRecord): Promise<LaunchedToken> => {

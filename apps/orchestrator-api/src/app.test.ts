@@ -223,6 +223,76 @@ describe("batch + sites (mock mode)", () => {
     expect((await post("/api/tokens/delete", { tokens: ["nosuchtk"] }, owner)).status).toBe(404);
   });
 
+  test("NEAR Intents: bulk toggle is creator-only/admin; page config; quote proxy is dry on testnet and picks the destination", async () => {
+    const owner = await session("iris.testnet");
+    const other = await session("mo.testnet");
+    const boss = await session("boss.testnet");
+    const r = await post("/api/launch/batch", { ideas: [idea("intone"), idea("inttwo")] }, owner);
+    expect(r.status).toBe(200);
+    const slug = (await r.json()).results[0].slug;
+    // off by default
+    const s0 = await (await app.request(`/api/site/${slug}`)).json();
+    expect(s0.intents).toBeNull();
+    expect(s0.siteConfig.intents).toBeUndefined();
+    expect(s0.network).toBe("testnet");
+
+    const on = { enabled: true, mode: "both" };
+    expect((await post("/api/tokens/intents", { tokens: ["intone"], intents: on }, other)).status).toBe(403);
+    expect((await post("/api/tokens/intents", { tokens: ["intone"], intents: on }, null)).status).toBe(401);
+    expect((await post("/api/tokens/intents", { tokens: ["intone"], intents: { enabled: true, mode: "swap" } }, owner)).status).toBe(400);
+    expect((await post("/api/tokens/intents", { tokens: Array.from({ length: 51 }, (_, i) => `tk${i}x`), intents: on }, owner)).status).toBe(400);
+    const mixed = await post("/api/tokens/intents", { tokens: ["intone", "inttwo", "nosuchtk"], intents: on }, owner);
+    expect(mixed.status).toBe(200);
+    expect((await mixed.json()).results.map((x: { ok: boolean }) => x.ok)).toEqual([true, true, false]);
+    const s1 = await (await app.request(`/api/site/${slug}`)).json();
+    expect(s1.intents).toEqual({ enabled: true, mode: "both", tipAsset: "usdc" });
+    expect(s1.siteConfig.intents.enabled).toBe(true);
+    const mine = (await (await app.request("/api/launches/iris.testnet")).json()).launches as { ticker: string; intents?: { enabled: boolean } }[];
+    expect(mine.find((l) => l.ticker === "intone")?.intents?.enabled).toBe(true);
+    // admin may change it; disable again
+    expect((await post("/api/tokens/intents", { tokens: ["inttwo"], intents: { enabled: false, mode: "both" } }, boss)).status).toBe(200);
+    expect((await (await app.request("/api/site/inttwo")).json()).intents).toBeNull();
+
+    // quote proxy (1Click mocked)
+    const { resetTokenCache } = await import("./intents");
+    resetTokenCache();
+    const sent: any[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init?: any) => {
+      const url = String(u);
+      if (url.endsWith("/v0/tokens")) return new Response(JSON.stringify([{ assetId: "nep141:sol.omft.near", symbol: "SOL", blockchain: "sol", decimals: 9, price: 100 }]));
+      if (url.endsWith("/v0/quote")) {
+        const b = JSON.parse(init.body);
+        sent.push(b);
+        return new Response(JSON.stringify({ quote: { amountIn: b.amount, amountInFormatted: "0.1", amountOut: "2", amountOutFormatted: "2", minAmountOut: "1", timeEstimate: 20, depositAddress: "SHOULD-NOT-LEAK-ON-DRY" }, quoteRequest: b, signature: "ed25519:x", correlationId: "c" }));
+      }
+      return realFetch(u, init);
+    }) as typeof fetch;
+    try {
+      const q = (b: object) => post("/api/intents/quote", { site: slug, originAsset: "nep141:sol.omft.near", amount: "100000000", ...b }, null);
+      const tip = await q({ mode: "tip", refundTo: "So1Refund11111111111111111111111111111111", dry: false });
+      expect(tip.status).toBe(200);
+      const tj = await tip.json();
+      expect(tj.preview).toBe(true);
+      expect(tj.dry).toBe(true);
+      expect(tj.depositAddress).toBeNull(); // testnet: never a deposit address
+      expect(sent.at(-1).dry).toBe(true);
+      expect(sent.at(-1).appFees).toBeUndefined();
+      expect(sent.at(-1).destinationAsset).toBe("nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1");
+      const buy = await (await q({ mode: "buy", recipient: "someone.testnet" })).json();
+      expect(buy.destinationAsset).toBe("nep141:wrap.near");
+      expect(sent.at(-1).recipient).toBe("intents.near");
+      expect((await q({ mode: "tip", originAsset: "nep141:not-listed.near" })).status).toBe(400);
+      expect((await q({ mode: "tip", amount: "0" })).status).toBe(400);
+      expect((await post("/api/intents/quote", { site: "inttwo", mode: "tip", originAsset: "nep141:sol.omft.near", amount: "1" }, null)).status).toBe(403);
+      await post("/api/tokens/intents", { tokens: ["intone"], intents: { enabled: true, mode: "tip" } }, owner);
+      expect((await q({ mode: "buy" })).status).toBe(403);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect((await app.request("/api/intents/status?depositAddress=bad addr")).status).toBe(400);
+  });
+
   test("health reports the per-call chunk and the run size", async () => {
     const h = await (await app.request("/api/health")).json();
     expect(h.maxBatch).toBe(5);

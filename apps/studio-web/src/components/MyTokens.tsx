@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { tokenIconDataUri, type LaunchedToken } from "@osl/schema";
+import { tokenIconDataUri, type IntentsConfig, type IntentsMode, type LaunchedToken } from "@osl/schema";
 import { EXPLORER_BASE } from "../lib/config";
 import {
   fmtUnits,
@@ -48,6 +48,7 @@ export default function MyTokens({
   lpResults,
   onRetryLiquidity,
   onDismissLp,
+  onSetIntents,
 }: {
   account: string;
   launches: LaunchedToken[] | null;
@@ -65,6 +66,8 @@ export default function MyTokens({
   lpResults: PullResult[] | null;
   onRetryLiquidity: (items: PullItem[]) => void;
   onDismissLp: () => void;
+  /** NEAR Intents widget on/off (and mode) for these tickers' pages. */
+  onSetIntents: (tickers: string[], cfg: IntentsConfig) => void;
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<VenueFilter>("all");
@@ -74,6 +77,7 @@ export default function MyTokens({
   const [showDeleted, setShowDeleted] = useState(false);
   const [confirmDel, setConfirmDel] = useState<LaunchedToken[] | null>(null);
   const [retryLp, setRetryLp] = useState<PullResult[] | null>(null);
+  const [intentsMode, setIntentsMode] = useState<IntentsMode>("both");
 
   const everything = launches ?? [];
   const deletedCount = everything.filter((l) => l.deletedAt).length;
@@ -104,6 +108,8 @@ export default function MyTokens({
   const relistable = visibleSel.filter(canRelist);
   const deletable = visibleSel.filter((l) => !l.deletedAt);
   const restorable = visibleSel.filter((l) => l.deletedAt && !l.deletedByAdmin);
+  const intentsAble = visibleSel.filter((l) => !l.deletedAt);
+  const intentsCfg = (enabled: boolean, l?: LaunchedToken): IntentsConfig => ({ enabled, mode: l?.intents?.mode ?? intentsMode, tipAsset: l?.intents?.tipAsset ?? "usdc", ...(l?.intents?.recipient ? { recipient: l.intents.recipient } : {}) });
 
   const copy = async (id: string) => {
     try {
@@ -114,14 +120,14 @@ export default function MyTokens({
   };
 
   const exportCsv = () => {
-    const cols = ["name", "ticker", "launched", "site", "contract", "contract_url", "launch_tx", "venue", "venue_url", "views"];
+    const cols = ["name", "ticker", "launched", "site", "contract", "contract_url", "launch_tx", "venue", "venue_url", "views", "near_intents"];
     const esc = (v: unknown) => {
       const s = String(v ?? "");
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = [cols.join(",")].concat(
       visible.map((l) =>
-        [l.name ?? "", l.ticker, new Date(l.createdAt).toISOString(), new URL(siteHref(l), location.origin).toString(), l.tokenId, l.explorerUrl, txUrl(l) ?? "", VENUE_LABEL[venueOf(l)], l.venueUrl ?? "", l.views ?? ""]
+        [l.name ?? "", l.ticker, new Date(l.createdAt).toISOString(), new URL(siteHref(l), location.origin).toString(), l.tokenId, l.explorerUrl, txUrl(l) ?? "", VENUE_LABEL[venueOf(l)], l.venueUrl ?? "", l.views ?? "", l.intents?.enabled ? l.intents.mode : "off"]
           .map(esc)
           .join(","),
       ),
@@ -187,6 +193,17 @@ export default function MyTokens({
               List {relistable.length} on Rhea
             </button>
             {relistable.length < visibleSel.length && <span className="muted small">{visibleSel.length - relistable.length} already listed or not held by you</span>}
+            {intentsAble.length > 0 && (
+              <span className="row intents-bulk">
+                <select value={intentsMode} onChange={(e) => setIntentsMode(e.target.value as IntentsMode)} aria-label="NEAR Intents mode">
+                  <option value="both">Intents: buy + tip</option>
+                  <option value="buy">Intents: buy only</option>
+                  <option value="tip">Intents: tips only</option>
+                </select>
+                <button className="mini" disabled={busy} onClick={() => onSetIntents(intentsAble.map((l) => l.ticker), intentsCfg(true))}>Enable NEAR Intents ({intentsAble.length})</button>
+                <button className="ghost" disabled={busy} onClick={() => onSetIntents(intentsAble.map((l) => l.ticker), intentsCfg(false))}>Disable</button>
+              </span>
+            )}
             {deletable.length > 0 && (
               <button className="ghost danger" disabled={busy} onClick={() => setConfirmDel(deletable)}>Delete {deletable.length}…</button>
             )}
@@ -255,14 +272,15 @@ export default function MyTokens({
                 <th>Tx</th>
                 <th>Venue</th>
                 <th>Views</th>
+                <th title="NEAR Intents widget on the token page: visitors buy or tip with any crypto (settles on mainnet)">Intents</th>
                 <th className="c-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
               {launches === null ? (
-                <tr><td colSpan={10} className="muted admin-empty">Loading…</td></tr>
+                <tr><td colSpan={11} className="muted admin-empty">Loading…</td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={10} className="muted admin-empty">{all.length ? "Nothing matches." : "Nothing yeeted yet. Launch from the Studio tab."}</td></tr>
+                <tr><td colSpan={11} className="muted admin-empty">{all.length ? "Nothing matches." : "Nothing yeeted yet. Launch from the Studio tab."}</td></tr>
               ) : (
                 visible.map((l) => {
                   const v = venueOf(l);
@@ -303,6 +321,18 @@ export default function MyTokens({
                         )}
                       </td>
                       <td className="num">{l.views ?? 0}</td>
+                      <td className="c-intents">
+                        <label className="pick small" title={l.intents?.enabled ? `On: ${l.intents.mode === "both" ? "buy + tip" : l.intents.mode}` : "Off"}>
+                          <input
+                            type="checkbox"
+                            checked={!!l.intents?.enabled}
+                            disabled={busy || !!l.deletedAt}
+                            onChange={(e) => onSetIntents([l.ticker], intentsCfg(e.target.checked, l))}
+                            aria-label={`NEAR Intents for ${l.ticker}`}
+                          />{" "}
+                          {l.intents?.enabled ? (l.intents.mode === "both" ? "buy+tip" : l.intents.mode) : "off"}
+                        </label>
+                      </td>
                       <td className="c-actions">
                         <a className="small" href={siteHref(l)}>open</a>{" "}
                         {canRelist(l) && (

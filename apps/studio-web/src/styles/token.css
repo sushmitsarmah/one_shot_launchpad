@@ -39,3 +39,33 @@
 .tk-made a { color: var(--pink); font-weight: 700; }
 @media (max-width: 560px) { .tk-card { transform: none !important; } }
 .tk-ga { margin-top: 0.4rem; font-size: 0.8rem; }
+
+/* NEAR Intents widget: tinted with the token's palette, no Yeetpad chrome. */
+.tk-intents-host { grid-column: 1 / -1; }
+.tk-intents { border-top: 10px solid var(--tk-secondary); transform: none !important; display: grid; gap: 0.7rem; }
+.tk-intents h2 { margin: 0; }
+.tk-intents h3 { font-family: var(--display); font-weight: 400; font-size: 1.05rem; margin: 0 0 0.3rem; }
+.tki-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.tki-tab { font: inherit; font-weight: 700; border: 3px solid var(--ink); border-radius: 999px; padding: 0.3rem 0.9rem; background: var(--white); color: var(--ink); cursor: pointer; }
+.tki-tab.is-on { background: var(--tk-primary); box-shadow: var(--shadow-sm); }
+.tki-note { margin: 0; padding: 0.55rem 0.8rem; border: 2px dashed var(--ink); border-radius: 12px; background: color-mix(in srgb, var(--tk-accent) 25%, var(--white)); font-weight: 600; font-size: 0.92rem; }
+.tki-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 0.7rem; }
+.tki-field { display: grid; gap: 0.25rem; font-weight: 700; font-size: 0.9rem; }
+.tki-in { font: inherit; font-weight: 500; width: 100%; min-width: 0; box-sizing: border-box; border: 3px solid var(--ink); border-radius: 12px; padding: 0.55rem 0.7rem; background: var(--white); color: var(--ink); }
+.tki-in:focus { outline: 3px solid var(--tk-primary); outline-offset: 1px; }
+.tki-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+.tki-actions .tki-in { flex: 1 1 12rem; width: auto; }
+.tki-btn { --bg: var(--tk-primary); }
+.tki-msg { margin: 0; min-height: 1.2em; font-weight: 600; }
+.tki-msg.is-bad { color: #b0123c; }
+.tki-quote, .tki-deposit, .tki-step2 { border: 3px solid var(--ink); border-radius: 14px; padding: 0.8rem 1rem; background: color-mix(in srgb, var(--tk-bg) 6%, var(--white)); }
+.tki-quote p, .tki-deposit p, .tki-step2 p { margin: 0.25rem 0; }
+.tki-small { font-size: 0.86rem; color: var(--ink-soft); }
+.tki-qr { width: min(220px, 60vw); background: #fff; border: 3px solid var(--ink); border-radius: 12px; margin: 0.5rem 0; }
+.tki-qr svg { display: block; width: 100%; height: auto; }
+.tki-addr { display: block; word-break: break-all; background: var(--cream-2); border-radius: 8px; padding: 0.4rem 0.55rem; font-size: 0.9rem; }
+.tki-copy { margin: 0.5rem 0; }
+.tki-status { font-weight: 700; }
+.tki-foot { margin: 0; font-size: 0.8rem; color: var(--ink-soft); }
+.tki-foot a { color: inherit; font-weight: 700; }
+@media (max-width: 560px) { .tki-actions .btn { width: 100%; } }

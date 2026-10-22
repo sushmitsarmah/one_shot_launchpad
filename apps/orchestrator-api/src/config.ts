@@ -73,6 +73,10 @@ export function buildConfig(src: EnvSource = {}) {
         "enabled after the first mainnet test launch",
       ),
     ) as string,
+    // NEAR Intents 1Click API (mainnet-only settlement). The JWT is optional (Worker secret ONECLICK_JWT):
+    // without it 1Click adds its unauthenticated platform fee; Yeetpad adds no fee of its own either way.
+    oneClickBaseUrl: env("ONECLICK_BASE_URL", "https://1click.chaindefuser.com") as string,
+    oneClickJwt: env("ONECLICK_JWT"),
     // JustHoot (mainnet only): the creator's wallet calls `launch_meme`. Off until mainnet launch.
     justhootEnabled: flag("JUSTHOOT_ENABLED"),
     justhootFactory: env("JUSTHOOT_FACTORY", "v2-launchpad.justhoot.near") as string,

@@ -184,6 +184,8 @@ export const LaunchedToken = z.object({
   /** Set when the creator (or an admin) took the token's site down (only listed with ?includeDeleted=1). */
   deletedAt: z.number().nullable().optional(),
   deletedByAdmin: z.boolean().optional(),
+  /** NEAR Intents widget settings for the token page (absent = off). */
+  intents: z.lazy(() => IntentsConfig).optional(),
 });
 export type LaunchedToken = z.infer<typeof LaunchedToken>;
 
@@ -398,3 +400,47 @@ export interface TokensActionResult {
   ok: boolean;
   note?: string;
 }
+
+
+// ---------- NEAR Intents (1Click) widget on token pages ----------
+/**
+ * buy = visitor pays any supported asset, 1Click delivers wNEAR to their NEAR account, then they swap
+ * wNEAR -> the token on Rhea with their wallet (1Click can't route into new tokens directly).
+ * tip = visitor pays any supported asset, 1Click delivers it to the creator as USDC or wNEAR on NEAR.
+ */
+export const INTENTS_MODES = ["buy", "tip", "both"] as const;
+export const IntentsMode = z.enum(INTENTS_MODES);
+export type IntentsMode = z.infer<typeof IntentsMode>;
+export const IntentsConfig = z.object({
+  enabled: z.boolean(),
+  mode: IntentsMode.default("both"),
+  /** Tips go here; defaults to the token's creator. */
+  recipient: NearAccountId.optional(),
+  /** What tips arrive as on NEAR. */
+  tipAsset: z.enum(["usdc", "wnear"]).default("usdc"),
+});
+export type IntentsConfig = z.infer<typeof IntentsConfig>;
+export const INTENTS_TOKENS_MAX = TOKENS_DELETE_MAX;
+export const TokensIntentsRequest = z.object({
+  tokens: z.array(Ticker).min(1).max(INTENTS_TOKENS_MAX),
+  intents: IntentsConfig,
+});
+export type TokensIntentsRequest = z.infer<typeof TokensIntentsRequest>;
+/** A 1Click asset id as listed by /v0/tokens (e.g. nep141:wrap.near, 1cs_v1:btc:native:coin). */
+export const IntentsAssetId = z.string().min(3).max(200).regex(/^[A-Za-z0-9_.:\-|]+$/, "invalid asset id");
+export const IntentsQuoteRequest = z.object({
+  /** Token page id (slug or ticker). */
+  site: z.string().min(2).max(64),
+  mode: z.enum(["buy", "tip"]),
+  originAsset: IntentsAssetId,
+  /** Amount of originAsset in its smallest unit. */
+  amount: z.string().regex(/^[1-9][0-9]{0,38}$/, "amount must be a positive integer in base units"),
+  /** Visitor's refund address on the origin chain (required for a real deposit address). */
+  refundTo: z.string().trim().min(3).max(128).regex(/^[A-Za-z0-9._:\-]+$/, "refund address has invalid characters").optional(),
+  /** buy: the visitor's NEAR mainnet account that receives wNEAR (required for a real deposit address). */
+  recipient: NearAccountId.optional(),
+  /** Price check only: no deposit address. Always true on testnet. */
+  dry: z.boolean().optional(),
+  slippageBps: z.number().int().min(10).max(500).optional(),
+});
+export type IntentsQuoteRequest = z.infer<typeof IntentsQuoteRequest>;

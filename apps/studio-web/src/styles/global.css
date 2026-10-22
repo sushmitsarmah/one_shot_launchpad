@@ -225,3 +225,9 @@ details summary { cursor: pointer; font-weight: 700; }
 .lp-report { border-color: #c81e4b !important; margin: 0.5rem 0; }
 .lp-report ul { margin: 0.4rem 0; padding-left: 1.1rem; }
 .lp-report .lp-bad { color: #9b1239; }
+.intents-bulk { gap: 0.35rem; align-items: center; }
+.intents-bulk select { font: inherit; font-size: 0.85rem; }
+.c-intents { white-space: nowrap; }
+.idea-intents { display: block; margin: 0.2rem 0 0.4rem; }
+.ir-intents { margin-right: 0.3rem; }
+.intents-all { margin-left: 0.5rem; }
