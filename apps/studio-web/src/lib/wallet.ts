@@ -17,7 +17,10 @@ export function initWallet() {
       network: NETWORK,
       modules: [setupMyNearWallet(), setupMeteorWallet(), setupHereWallet(), setupIntearWallet()],
     });
-    const modal = setupModal(selector, { contractId: VAULT_CONTRACT });
+    // No contractId: signing in must not add a limited access key to the user's account. Yeetpad never
+    // uses one (every user tx carries a deposit, so it needs the wallet's approval anyway), and wallets
+    // like Meteor then make sign-out a key-removal transaction. Sign-in proof is the NEP-413 message.
+    const modal = setupModal(selector, {});
     return { selector, modal };
   })();
   return ready;
