@@ -12,7 +12,7 @@ export const CONTACT_MAX = 100;
 export function accountError(account: string): string | null {
   const a = account.trim().toLowerCase();
   if (!a) return "we need your NEAR account id";
-  if (a.length < 2 || a.length > 64 || !ACCOUNT_RE.test(a)) return "that doesn't look like a NEAR account (e.g. yeeter.testnet)";
+  if (a.length < 2 || a.length > 64 || !ACCOUNT_RE.test(a)) return "that doesn't look like a NEAR account (e.g. yeeter.near)";
   return null;
 }
 

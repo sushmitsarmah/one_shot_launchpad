@@ -66,6 +66,7 @@ a { color: inherit; }
   border: 2px solid var(--ink); border-radius: 999px; padding: 0.2rem 0.65rem; background: var(--yellow);
 }
 .pill-testnet { background: var(--sky); }
+.pill-mainnet { background: var(--lime); }
 
 /* ---------- header ---------- */
 .site-header {

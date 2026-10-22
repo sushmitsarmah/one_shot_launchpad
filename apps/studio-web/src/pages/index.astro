@@ -3,10 +3,13 @@ import Base from "../layouts/Base.astro";
 import "../styles/landing.css";
 import "../styles/waitlist.css";
 import WaitlistCta from "../components/WaitlistForm.tsx";
+import { IS_MAINNET, NET_LABEL } from "../lib/config";
+/** Per-launch cost shown in copy (token storage via the global token contract; +~0.02 with a Rhea pool). */
+const LAUNCH_COST = import.meta.env.PUBLIC_LAUNCH_COST ?? "0.08";
 
 const steps = [
-  { n: "1", emoji: "🔌", title: "Connect a NEAR wallet", body: "MyNearWallet, Meteor or HERE. Testnet accounts are free.", color: "var(--sky)" },
-  { n: "2", emoji: "🪙", title: "Top up credits", body: "Deposit a little testnet NEAR into the launch vault. Anything you don't use can be withdrawn.", color: "var(--yellow)" },
+  { n: "1", emoji: "🔌", title: "Connect a NEAR wallet", body: IS_MAINNET ? "MyNearWallet, Meteor or HERE." : "MyNearWallet, Meteor or HERE. Testnet accounts are free.", color: "var(--sky)" },
+  { n: "2", emoji: "🪙", title: "Top up credits", body: `Deposit a little ${IS_MAINNET ? "" : "testnet "}NEAR into the launch vault. Anything you don't use can be withdrawn.`, color: "var(--yellow)" },
   { n: "3", emoji: "🧠", title: "Prompt the AI", body: "Describe a vibe. The AI cooks up a name, ticker, tagline, story and colour palette.", color: "var(--pink)" },
   { n: "4", emoji: "🚀", title: "Launch it", body: "One click deploys a real NEP-141 token with the whole supply minted to you, plus its site config.", color: "var(--lime)" },
 ];
@@ -42,8 +45,10 @@ const marquee = ["$SOAK", "$SYNCAT", "$STARGAZE", "$SNOOZE", "$WOOF", "$BAGEL", 
 const marqueeEmoji = ["♨️", "🐈‍⬛", "🔭", "🐧", "🐶", "🥯", "🦋", "🍜", "🐸", "🍞", "☁️", "🦆"];
 
 const faqs = [
-  { q: "What does it cost?", a: "About <strong>0.01 NEAR</strong> of credits per generated idea (charged only if the AI returns a valid idea), and about <strong>1.77 NEAR</strong> per launch to pay for the new token contract's on-chain storage." },
-  { q: "Is this real money?", a: "Nope. Everything runs on <strong>NEAR testnet</strong>, so it's play money. Grab free testnet NEAR when you create a testnet wallet." },
+  { q: "What does it cost?", a: `About <strong>0.01 NEAR</strong> of credits per generated idea (charged only if the AI returns a valid idea), and about <strong>${LAUNCH_COST} NEAR</strong> per launch to pay for the new token's on-chain storage (about 0.02 more to open a Rhea pool).` },
+  IS_MAINNET
+    ? { q: "Is this real money?", a: "Yes. Yeetpad runs on <strong>NEAR mainnet</strong>: credits and launch costs are real NEAR, and tokens are real on-chain assets with no promised value. Not financial advice." }
+    : { q: "Is this real money?", a: "Nope. Everything runs on <strong>NEAR testnet</strong>, so it's play money. Grab free testnet NEAR when you create a testnet wallet." },
   { q: "Who owns the token?", a: "You do. The full supply is minted straight to your wallet. The launchpad's relayer just pays the gas and takes the storage fee from your vault credits." },
   { q: "Can I get unused credits back?", a: "Yes. Your vault balance is yours, and you can withdraw what you don't spend." },
 ];
@@ -56,7 +61,7 @@ const faqs = [
       <div class="blob blob-b" aria-hidden="true"></div>
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <span class="pill hero-pill">✨ AI token factory · NEAR testnet · 🔒 invite-only beta</span>
+          <span class="pill hero-pill">✨ AI token factory · NEAR {NET_LABEL} · 🔒 invite-only beta</span>
           <h1 class="hero-title">
             One prompt.<br />
             <span class="hl hl-pink">One token.</span><br />
@@ -176,10 +181,10 @@ const faqs = [
       <div class="wrap faq-grid">
         <div class="section-head left">
           <span class="pill">What it costs</span>
-          <h2>Pocket change.<br /><span class="hl hl-yellow">Testnet</span> pocket change.</h2>
+          <h2>Pocket change.<br />{IS_MAINNET ? <span class="hl hl-yellow">Real</span> : <span class="hl hl-yellow">Testnet</span>} pocket change.</h2>
           <div class="price-tags">
             <div class="price-tag pt-1"><b>~0.01</b><span>NEAR / idea</span></div>
-            <div class="price-tag pt-2"><b>~1.77</b><span>NEAR / launch</span></div>
+            <div class="price-tag pt-2"><b>~{LAUNCH_COST}</b><span>NEAR / launch</span></div>
           </div>
         </div>
         <div class="faq">

@@ -1,6 +1,7 @@
 ---
 import SiteHeader from "../components/SiteHeader.astro";
 import "../styles/brand.css";
+import { IS_MAINNET, NET_LABEL } from "../lib/config";
 
 interface Props {
   title: string;
@@ -11,11 +12,11 @@ interface Props {
 }
 const {
   title,
-  description = "Yeetpad: type one prompt and yeet a real NEP-141 token (plus its landing site) onto NEAR. AI-powered token launchpad, on NEAR testnet.",
+  description = `Yeetpad: type one prompt and yeet a real NEP-141 token (plus its landing site) onto NEAR. AI-powered token launchpad, on NEAR ${NET_LABEL}.`,
   page,
   chrome = true,
 } = Astro.props;
-const SITE = "https://yeetpad.fun";
+const SITE = import.meta.env.PUBLIC_SITE_URL ?? "https://yeetpad.fun";
 const url = new URL(Astro.url.pathname, SITE).toString();
 ---
 <!doctype html>
@@ -62,7 +63,11 @@ const url = new URL(Astro.url.pathname, SITE).toString();
       <div class="wrap footer-inner">
         <a class="brand small" href="/"><span class="brand-mark" aria-hidden="true">🚀</span> Yeetpad</a>
         <p>
-          Runs on <strong>NEAR testnet</strong>. Test tokens only, no real money, and nothing here is financial advice.
+          {IS_MAINNET ? (
+            <Fragment>Runs on <strong>NEAR mainnet</strong>. Tokens are real on-chain assets with no promised value; launching costs real NEAR. Nothing here is financial advice.</Fragment>
+          ) : (
+            <Fragment>Runs on <strong>NEAR testnet</strong>. Test tokens only, no real money, and nothing here is financial advice.</Fragment>
+          )}
         </p>
         <p class="footer-links">
           <a href="/app/">App</a>

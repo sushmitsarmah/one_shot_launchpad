@@ -126,6 +126,7 @@ app.get("/", (c) => c.json({ ok: true, service: "yeetpad orchestrator", network:
 app.get("/api/health", (c) =>
   c.json({
     ok: true,
+    network: config.networkId,
     llmMock: config.llmMock,
     nearMock: config.nearMock,
     model: config.nearAiModel,

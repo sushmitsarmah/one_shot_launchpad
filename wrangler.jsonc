@@ -12,5 +12,16 @@
     "run_worker_first": ["/t/*"]
   },
   // Token site configs written by the API Worker (namespace yeetpad-sites). Read here, plus views:<ticker> counters.
-  "kv_namespaces": [{ "binding": "SITES", "id": "39411e131b9049f3b4731d475866e58a" }]
+  "kv_namespaces": [{ "binding": "SITES", "id": "39411e131b9049f3b4731d475866e58a" }],
+  // Testnet site canonical origin (flip to https://testnet.yeetpad.fun when mainnet takes yeetpad.fun).
+  "vars": { "SITE_ORIGIN": "https://yeetpad.fun" },
+  // ---- Mainnet site: `bun run deploy:web:mainnet` builds with PUBLIC_NETWORK=mainnet and deploys worker
+  // one-shot-launchpad-mainnet (workers.dev only until the domain flip in docs/mainnet-deploy.md). ----
+  "env": {
+    "mainnet": {
+      "name": "one-shot-launchpad-mainnet",
+      "kv_namespaces": [{ "binding": "SITES", "id": "1370f80509d14b8897360a7d4dc18b01" }],
+      "vars": { "SITE_ORIGIN": "https://yeetpad.fun" }
+    }
+  }
 }

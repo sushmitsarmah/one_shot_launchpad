@@ -6,7 +6,7 @@ import { viewCall } from "../lib/near";
 import { getVaultBalance } from "../lib/near";
 import { appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
 import { webpIcons } from "../lib/icon";
-import { EXPLORER_BASE } from "../lib/config";
+import { EXPLORER_BASE, NETWORK } from "../lib/config";
 import { NotWhitelistedError, clearSession, completeRedirectSignIn, ensureSession, getSession } from "../lib/auth";
 import { WaitlistForm } from "./WaitlistForm";
 import Admin from "./Admin";
@@ -309,7 +309,7 @@ export default function Studio() {
     return (
       <section className="card center">
         <h2>1. Connect your NEAR wallet</h2>
-        <p className="muted">Testnet only. MyNearWallet, Meteor or HERE.</p>
+        <p className="muted">NEAR {NETWORK}. MyNearWallet, Meteor or HERE.</p>
         <button onClick={connect}>Connect wallet</button>
         {error && <p className="error">{error}</p>}
       </section>

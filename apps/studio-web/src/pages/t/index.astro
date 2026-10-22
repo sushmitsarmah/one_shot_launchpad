@@ -3,8 +3,9 @@
 // the ticker is read from location.pathname and the SiteConfig fetched from /api/site/<ticker>.
 import Base from "../../layouts/Base.astro";
 import "../../styles/token.css";
+import { IS_MAINNET, NET_LABEL } from "../../lib/config";
 ---
-<Base title="Token" description="A token on NEAR testnet." page="token" chrome={false}>
+<Base title="Token" description={`A token on NEAR ${NET_LABEL}.`} page="token" chrome={false}>
   <main class="tk-main" id="tk" data-state="loading">
     <div class="tk-loading wrap">Loading…</div>
     <div class="tk-missing wrap">
@@ -36,7 +37,7 @@ import "../../styles/token.css";
           <h2>Token facts</h2>
           <dl>
             <dt>Contract</dt><dd><code id="tk-contract"></code></dd>
-            <dt>Standard</dt><dd>NEP-141 · NEAR testnet</dd>
+            <dt>Standard</dt><dd>NEP-141 · NEAR {NET_LABEL}</dd>
             <dt>Creator</dt><dd><code id="tk-owner"></code></dd>
             <dt>Launched</dt><dd id="tk-date"></dd>
           </dl>
@@ -47,7 +48,7 @@ import "../../styles/token.css";
           <div id="tk-swatches" class="tk-swatches"></div>
         </div>
       </section>
-      <p class="wrap tk-made">Testnet token, zero real value. <a href="/">Launched with Yeetpad</a></p>
+      <p class="wrap tk-made">{IS_MAINNET ? "Community token on NEAR mainnet, launched by its creator. Not endorsed by Yeetpad; no promised value, not financial advice." : "Testnet token, zero real value."} <a href="/">Launched with Yeetpad</a></p>
     </article>
   </main>
   <script>

@@ -4,8 +4,13 @@
 //! by owner, paginated) plus an optional small site config per token for Yeetpad token pages.
 //!
 //! Admin: two-step owner transfer, pause/unpause, owner-only `update_contract` + `migrate`.
+//!
+//! Global token code (NEP-591, optional): the owner calls `publish_global_token` once (burns
+//! 10x storage for the embedded token wasm from the factory's balance), then
+//! `set_global_token(Some(hash))`. New tokens then `use_global_contract(hash)` instead of deploying
+//! their own copy, so a launch needs ~0.076 NEAR instead of ~1.82. `set_global_token(None)` switches back.
 use near_contract_standards::fungible_token::metadata::FungibleTokenMetadata;
-use near_sdk::json_types::{U128, U64};
+use near_sdk::json_types::{Base58CryptoHash, U128, U64};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::serde_json::json;
 use near_sdk::store::{LookupMap, LookupSet, Vector};
@@ -23,6 +28,10 @@ const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(50);
 const EXTRA_STORAGE_BYTES: u128 = 12_000;
 /// Bytes kept by the factory to pay for its registry entry (record + site + indexes).
 const RECORD_STORAGE_BYTES: u128 = 3_500;
+/// Storage charged for a global-contract reference (32-byte hash, rounded up generously).
+const GLOBAL_REF_BYTES: u128 = 100;
+/// Token state margin when the code is global (observed 1,161 bytes used incl. a ~1 KB icon).
+const GLOBAL_EXTRA_STORAGE_BYTES: u128 = 4_000;
 pub const MIN_TICKER_LEN: usize = 2;
 pub const MAX_TICKER_LEN: usize = 16;
 pub const MAX_SITE_BYTES: usize = 2_048;
@@ -54,6 +63,21 @@ pub struct TokenRecord {
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Factory {
+    owner_id: AccountId,
+    tokens_created: u64,
+    pending_owner: Option<AccountId>,
+    paused: bool,
+    tokens: LookupMap<String, TokenRecord>,
+    tickers: Vector<String>,
+    by_owner: LookupMap<AccountId, Vec<String>>,
+    pending: LookupSet<String>,
+    /// When set, new tokens use this global contract (sha256 of TOKEN_WASM) instead of a copy.
+    global_token: Option<Base58CryptoHash>,
+}
+
+/// v0.2/v0.3 state (no global token), for `migrate`.
+#[near(serializers = [borsh])]
+pub struct FactoryV2 {
     owner_id: AccountId,
     tokens_created: u64,
     pending_owner: Option<AccountId>,
@@ -107,6 +131,19 @@ impl Factory {
         if let Ok(cur) = Factory::try_from_slice(&raw) {
             return cur; // already on this layout
         }
+        if let Ok(o) = FactoryV2::try_from_slice(&raw) {
+            return Self {
+                owner_id: o.owner_id,
+                tokens_created: o.tokens_created,
+                pending_owner: o.pending_owner,
+                paused: o.paused,
+                tokens: o.tokens,
+                tickers: o.tickers,
+                by_owner: o.by_owner,
+                pending: o.pending,
+                global_token: None,
+            };
+        }
         let old = FactoryV1::try_from_slice(&raw).unwrap_or_else(|_| env::panic_str("unknown state layout"));
         Self::from_parts(old.owner_id, old.tokens_created)
     }
@@ -115,7 +152,7 @@ impl Factory {
 
     /// Attached deposit needed to cover storage of a new token account + its registry entry.
     pub fn get_required_deposit(&self) -> U128 {
-        U128(Self::required_deposit().as_yoctonear())
+        U128(self.required_deposit().as_yoctonear())
     }
 
     pub fn get_tokens_created(&self) -> u64 {
@@ -133,7 +170,10 @@ impl Factory {
             "paused": self.paused,
             "tokens_created": self.tokens_created,
             "tokens_registered": self.tickers.len(),
-            "required_deposit": U128(Self::required_deposit().as_yoctonear()),
+            "required_deposit": U128(self.required_deposit().as_yoctonear()),
+            "global_token": self.global_token,
+            "token_code_hash": Base58CryptoHash::from(Self::token_code_hash()),
+            "token_code_bytes": TOKEN_WASM.len(),
             "version": env!("CARGO_PKG_VERSION"),
         })
     }
@@ -197,7 +237,7 @@ impl Factory {
         }
         require!(!self.tokens.contains_key(&ticker), format!("ticker {ticker} is already taken"));
         require!(!self.pending.contains(&ticker), format!("ticker {ticker} is already being launched"));
-        let required = Self::required_deposit();
+        let required = self.required_deposit();
         let attached = env::attached_deposit();
         require!(
             attached >= required,
@@ -217,11 +257,12 @@ impl Factory {
         let reserve = Self::record_reserve();
         let to_token = attached.saturating_sub(reserve);
 
-        Promise::new(token_id.clone())
-            .create_account()
-            .transfer(to_token)
-            .deploy_contract(TOKEN_WASM.to_vec())
-            .function_call_weight(
+        let p = Promise::new(token_id.clone()).create_account().transfer(to_token);
+        let p = match self.global_token {
+            Some(h) => p.use_global_contract(near_sdk::CryptoHash::from(h)),
+            None => p.deploy_contract(TOKEN_WASM.to_vec()),
+        };
+        p.function_call_weight(
                 "new".to_string(),
                 json!({ "owner_id": owner_id, "total_supply": total_supply, "metadata": metadata, "mint_to": mint_to })
                     .to_string()
@@ -305,6 +346,30 @@ impl Factory {
         self.pending_owner = None;
     }
 
+    /// Publishes the embedded token wasm as a global contract (by code hash, so immutable).
+    /// Burns `10 * storage_byte_cost * len` from the factory's own balance (~16.65 NEAR for
+    /// 166.5 KB); top the factory up first. Does not switch launches over: see `set_global_token`.
+    pub fn publish_global_token(&mut self) -> Promise {
+        self.assert_owner();
+        let hash = Base58CryptoHash::from(Self::token_code_hash());
+        emit("global_token_published", json!({ "code_hash": hash, "bytes": TOKEN_WASM.len() }));
+        Promise::new(env::current_account_id()).deploy_global_contract(TOKEN_WASM.to_vec())
+    }
+
+    /// Switch new launches to the global token code (`Some(hash)`, must equal the embedded
+    /// wasm's sha256) or back to deploying a copy (`None`).
+    pub fn set_global_token(&mut self, code_hash: Option<Base58CryptoHash>) {
+        self.assert_owner();
+        if let Some(h) = &code_hash {
+            require!(
+                near_sdk::CryptoHash::from(*h) == Self::token_code_hash(),
+                "code_hash must be the sha256 of the embedded token wasm (see get_config.token_code_hash)"
+            );
+        }
+        self.global_token = code_hash;
+        emit("global_token_set", json!({ "code_hash": code_hash }));
+    }
+
     /// Owner-only upgrade: input is the raw new wasm; deploys it and calls `migrate`.
     pub fn update_contract(&self) -> Promise {
         self.assert_owner();
@@ -326,15 +391,26 @@ impl Factory {
             tickers: Vector::new(StorageKey::Tickers),
             by_owner: LookupMap::new(StorageKey::ByOwner),
             pending: LookupSet::new(StorageKey::Pending),
+            global_token: None,
         }
+    }
+
+    fn token_code_hash() -> near_sdk::CryptoHash {
+        env::sha256_array(TOKEN_WASM)
     }
 
     fn record_reserve() -> NearToken {
         env::storage_byte_cost().saturating_mul(RECORD_STORAGE_BYTES)
     }
 
-    fn required_deposit() -> NearToken {
-        env::storage_byte_cost().saturating_mul(TOKEN_WASM.len() as u128 + EXTRA_STORAGE_BYTES + RECORD_STORAGE_BYTES)
+    /// Token account storage (its own wasm copy unless global code is used) + registry entry.
+    fn required_deposit(&self) -> NearToken {
+        let token = if self.global_token.is_some() {
+            GLOBAL_REF_BYTES + GLOBAL_EXTRA_STORAGE_BYTES
+        } else {
+            TOKEN_WASM.len() as u128 + EXTRA_STORAGE_BYTES
+        };
+        env::storage_byte_cost().saturating_mul(token + RECORD_STORAGE_BYTES)
     }
 
     fn assert_owner(&self) {
@@ -513,5 +589,64 @@ mod tests {
         let req = f.get_required_deposit().0;
         ctx(2, req);
         let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), Some("x".repeat(MAX_SITE_BYTES + 1)), None);
+    }
+
+    #[test]
+    fn global_token_lowers_deposit_and_can_be_switched_off() {
+        ctx(0, 0);
+        let mut f = Factory::new(accounts(0));
+        let full = f.get_required_deposit().0;
+        let hash = Base58CryptoHash::from(Factory::token_code_hash());
+        f.set_global_token(Some(hash));
+        let global = f.get_required_deposit().0;
+        let b = env::storage_byte_cost().as_yoctonear();
+        assert_eq!(full - global, b * (TOKEN_WASM.len() as u128 + EXTRA_STORAGE_BYTES - GLOBAL_REF_BYTES - GLOBAL_EXTRA_STORAGE_BYTES));
+        assert_eq!(global, b * 7_600, "0.076 NEAR per launch with global code");
+        // create_token works with the smaller deposit
+        ctx(2, global);
+        let _ = f.create_token("moon".into(), meta(), U128(1), accounts(1), None, None);
+        ctx(0, 0);
+        f.set_global_token(None);
+        assert_eq!(f.get_required_deposit().0, full);
+    }
+
+    #[test]
+    #[should_panic(expected = "code_hash must be the sha256")]
+    fn global_token_rejects_other_hash() {
+        ctx(0, 0);
+        let mut f = Factory::new(accounts(0));
+        f.set_global_token(Some(Base58CryptoHash::from([7u8; 32])));
+    }
+
+    #[test]
+    #[should_panic(expected = "only owner")]
+    fn only_owner_publishes_global() {
+        ctx(0, 0);
+        let mut f = Factory::new(accounts(0));
+        ctx(1, 0);
+        let _ = f.publish_global_token();
+    }
+
+    #[test]
+    fn migrates_v2_layout() {
+        use near_sdk::borsh::BorshSerialize;
+        ctx(0, 0);
+        let v2 = FactoryV2 {
+            owner_id: accounts(0),
+            tokens_created: 7,
+            pending_owner: None,
+            paused: true,
+            tokens: LookupMap::new(StorageKey::Tokens),
+            tickers: Vector::new(StorageKey::Tickers),
+            by_owner: LookupMap::new(StorageKey::ByOwner),
+            pending: LookupSet::new(StorageKey::Pending),
+        };
+        let mut buf = vec![];
+        v2.serialize(&mut buf).unwrap();
+        env::storage_write(b"STATE", &buf);
+        let f = Factory::migrate();
+        assert_eq!(f.get_tokens_created(), 7);
+        assert_eq!(f.get_config()["paused"], true);
+        assert_eq!(f.get_config()["global_token"], near_sdk::serde_json::Value::Null);
     }
 }

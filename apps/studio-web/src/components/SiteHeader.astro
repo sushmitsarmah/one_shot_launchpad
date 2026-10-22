@@ -1,4 +1,5 @@
 ---
+import { NET_LABEL } from "../lib/config";
 interface Props { page: "home" | "app" | "token" }
 const { page } = Astro.props;
 ---
@@ -17,7 +18,7 @@ const { page } = Astro.props;
         </>
       ) : (
         <>
-          <span class="pill pill-testnet">testnet</span>
+          <span class={`pill pill-${NET_LABEL}`}>{NET_LABEL}</span>
           <a class="btn btn-sm btn-ghost" href="/">← Home</a>
         </>
       )}

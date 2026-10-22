@@ -28,5 +28,45 @@
     "ALLOWED_ACCOUNTS": "",
     "ADMIN_ACCOUNTS": "osl-e2e-mvhxupmb.testnet",
     "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad.sushmitsarmah.workers.dev,http://localhost:4321"
+  },
+  // ---- Mainnet: `bun run deploy:api:mainnet` (worker one-shot-launchpad-api-mainnet). Not deployed yet. ----
+  // Vars are NOT inherited by wrangler envs, so everything is repeated here. Secrets (set with --env mainnet):
+  // RELAYER_PRIVATE_KEY, SESSION_SECRET (new, mainnet only), NEARAI_API_KEY. See docs/mainnet-deploy.md.
+  "env": {
+    "mainnet": {
+      "name": "one-shot-launchpad-api-mainnet",
+      "workers_dev": true,
+      "observability": { "enabled": true },
+      // Separate KV namespace "yeetpad-sites-mainnet" (sites, waitlist, allowlist, views)
+      "kv_namespaces": [{ "binding": "SITES", "id": "1370f80509d14b8897360a7d4dc18b01" }],
+      "vars": {
+        "NEAR_NETWORK": "mainnet",
+        "NEARAI_BASE_URL": "https://ollama.com/v1",
+        "NEARAI_MODEL": "gemma4:31b",
+        "LLM_MAX_TOKENS": "500",
+        "LLM_MOCK": "0",
+        "NEAR_MOCK": "0",
+        "NEAR_RPC_URL": "https://rpc.mainnet.fastnear.com",
+        "VAULT_CONTRACT": "vault.yeetpad.near",
+        "FT_FACTORY_CONTRACT": "factory.yeetpad.near",
+        "RELAYER_ACCOUNT_ID": "relayer.yeetpad.near",
+        "AUTH_RECIPIENT": "vault.yeetpad.near",
+        "EXPLORER_BASE": "https://nearblocks.io",
+        "DCL_CONTRACT": "dclv2.ref-labs.near",
+        "WNEAR_CONTRACT": "wrap.near",
+        "SITE_BASE": "https://yeetpad.fun",
+        "PUBLIC_API_BASE": "https://one-shot-launchpad-api-mainnet.sushmitsarmah.workers.dev",
+        // Off until one tiny mainnet launch on each venue has been verified (docs/mainnet-deploy.md step 9).
+        "NEARLY_ENABLED": "0",
+        "NEARLY_FACTORY": "nearlytrade.near",
+        "JUSTHOOT_ENABLED": "0",
+        "JUSTHOOT_FACTORY": "v2-launchpad.justhoot.near",
+        "LOCKED": "1",
+        "ALLOWED_ACCOUNTS": "",
+        // Add your own mainnet wallet here before deploying.
+        "ADMIN_ACCOUNTS": "yeetpad.near",
+        "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad-mainnet.sushmitsarmah.workers.dev,http://localhost:4321"
+      }
+    }
   }
 }

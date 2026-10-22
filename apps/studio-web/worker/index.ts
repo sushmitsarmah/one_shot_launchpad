@@ -29,6 +29,8 @@ interface Ctx {
 interface Env {
   ASSETS: { fetch(req: Request | string): Promise<Response> };
   SITES?: KV;
+  /** Canonical origin for token pages (wrangler var); yeetpad.fun by default. */
+  SITE_ORIGIN?: string;
 }
 interface Site {
   slug?: string;
@@ -38,7 +40,7 @@ interface Site {
   analytics?: { gaId?: string };
 }
 
-const ORIGIN = "https://yeetpad.fun";
+const DEFAULT_ORIGIN = "https://yeetpad.fun";
 const ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TICKER_RE = /^[a-z][a-z0-9]{1,15}$/;
 const COLOR_RE = /^#[0-9a-fA-F]{3,8}$/;
@@ -111,7 +113,7 @@ export default {
     const b = site.branding;
     const title = `${b.name} ($${b.ticker.toUpperCase()})`;
     const desc = (b.tagline ? `${b.tagline} ${b.description}` : b.description).slice(0, 300);
-    const canonical = `${ORIGIN}/t/${slug}`;
+    const canonical = `${(env.SITE_ORIGIN ?? DEFAULT_ORIGIN).replace(/\/$/, "")}/t/${slug}`;
     const bg = COLOR_RE.test(site.theme?.colors?.background ?? "") ? site.theme.colors.background : "#1b1433";
     const icon = site.iconDataUri?.startsWith("data:image/svg+xml") ? site.iconDataUri : null;
 

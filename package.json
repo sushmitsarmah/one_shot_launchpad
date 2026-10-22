@@ -23,6 +23,11 @@
     "deploy:all": "cd scripts && bun run deploy:all",
     "contracts:upgrade": "cd scripts && bun run upgrade",
     "test:api": "cd apps/orchestrator-api && bun test",
-    "test": "bun run test:api && bun run contracts:test"
+    "test": "bun run test:api && bun run contracts:test",
+    "deploy:api:mainnet": "cd apps/orchestrator-api && npx -y wrangler@4.86.0 deploy --env mainnet",
+    "build:web:mainnet": "cd apps/studio-web && PUBLIC_NETWORK=mainnet PUBLIC_SITE_URL=https://yeetpad.fun bun run build",
+    "deploy:web:mainnet": "bun run build:web:mainnet && npx -y wrangler@4.86.0 deploy --env mainnet && bun run build:web",
+    "deploy:mainnet": "bun scripts/deploy-mainnet.ts",
+    "regression:testnet": "bun scripts/regression-testnet.ts"
   }
 }
