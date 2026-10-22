@@ -36,3 +36,21 @@ describe("launch run state", () => {
     expect(r.items[0].status).toBe("pending");
   });
 });
+
+describe("ideas draft (edits survive reload / redirect)", () => {
+  test("save + load per account, clear on empty", async () => {
+    const mem = new Map<string, string>();
+    (globalThis as any).localStorage = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => mem.set(k, v), removeItem: (k: string) => mem.delete(k) };
+    const { loadDraft, saveDraft } = await import("./run");
+    const orig = idea("a1");
+    const edited = { ...orig, name: "Edited Name", description: "Edited description long enough." };
+    saveDraft("me.testnet", { prompt: "p", ideas: [edited], originals: [orig], picked: [false] });
+    const d = loadDraft("me.testnet")!;
+    expect(d.ideas[0].name).toBe("Edited Name");
+    expect(d.originals[0].name).toBe("a1 coin");
+    expect(d.picked).toEqual([false]);
+    expect(loadDraft("other.testnet")).toBeNull();
+    saveDraft("me.testnet", { prompt: "", ideas: [], originals: [], picked: [] });
+    expect(loadDraft("me.testnet")).toBeNull();
+  });
+});

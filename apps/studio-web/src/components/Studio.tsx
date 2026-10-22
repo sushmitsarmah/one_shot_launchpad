@@ -8,7 +8,11 @@ import {
   chunkSizes,
   clampRun,
   dedupeIdeas,
+  hasErrors,
   pool,
+  runErrors,
+  shufflePalette,
+  type IdeaErrors,
   tokenIconDataUri,
   type BatchLaunchResponse,
   type LaunchedToken,
@@ -21,7 +25,7 @@ import { initWallet, depositCredits, friendlyWalletError, sendForRelist, signCal
 import { viewCall } from "../lib/near";
 import { getVaultBalance } from "../lib/near";
 import { aiComputeCost, ApiError, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
-import { applyResults, isDone, loadRun, mark, newRun, reconcile, runCounts, saveRun, type LaunchRun, type RunItem } from "../lib/run";
+import { applyResults, isDone, loadDraft, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveRun, type LaunchRun, type RunItem } from "../lib/run";
 import MyTokens from "./MyTokens";
 import { webpIcons } from "../lib/icon";
 import { EXPLORER_BASE, NETWORK } from "../lib/config";
@@ -54,6 +58,10 @@ export default function Studio() {
   const [aiCost, setAiCost] = useState<string | null>(null);
   const [ideas, setIdeas] = useState<LaunchIdea[]>([]);
   const [picked, setPicked] = useState<boolean[]>([]);
+  /** As generated (for "Reset to original"); parallel to `ideas`. */
+  const [originals, setOriginals] = useState<LaunchIdea[]>([]);
+  const [editing, setEditing] = useState<Set<number>>(new Set());
+  const [regen, setRegen] = useState<Set<number>>(new Set());
   const [result, setResult] = useState<BatchLaunchResponse | null>(null);
   const [launches, setLaunches] = useState<LaunchedToken[] | null>(null);
   const [openSettings, setOpenSettings] = useState<string | null>(null);
@@ -180,6 +188,23 @@ export default function Studio() {
   }, [account]);
   useEffect(() => void loadLaunches(), [loadLaunches]);
 
+  // Generated + edited ideas survive a reload / wallet redirect (per account) until the next generation.
+  useEffect(() => {
+    if (!account) return;
+    const d = loadDraft(account);
+    if (d && ideasRef.current.length === 0) {
+      setIdeas(d.ideas);
+      setPicked(d.picked);
+      setOriginals(d.originals);
+      if (d.prompt) setPrompt(d.prompt);
+    }
+  }, [account]);
+  useEffect(() => {
+    if (!account) return;
+    const t = setTimeout(() => saveDraft(account, { prompt, ideas, picked, originals }), 300);
+    return () => clearTimeout(t);
+  }, [account, prompt, ideas, picked, originals]);
+
   // A run left over from a reload / redirect: show it, and mark items that did launch (from My launches) as done.
   useEffect(() => {
     if (!account) return;
@@ -200,7 +225,7 @@ export default function Studio() {
   // Cost estimate from the venue's quote views (only with a live session; never prompts the wallet).
   const chosenKey = chosen.map((i) => i.ticker).join(",");
   useEffect(() => {
-    if (!session?.token || chosen.length === 0) return setQ(null);
+    if (!session?.token || chosen.length === 0 || runErrors(chosen, undefined, { venue: listOn }).some(hasErrors)) return setQ(null);
     let stop = false;
     const t = setTimeout(async () => {
       const icons = listOn === "justhoot" ? await webpIcons(chosen) : undefined;
@@ -426,6 +451,8 @@ export default function Studio() {
       genStop.current = false;
       setIdeas([]);
       setPicked([]);
+      setOriginals([]);
+      setEditing(new Set());
       ideasRef.current = [];
       setResult(null);
       const seen = { names: new Set<string>(), tickers: new Set<string>() };
@@ -472,6 +499,7 @@ export default function Studio() {
               ideasRef.current = [...ideasRef.current, ...fresh];
               setIdeas(ideasRef.current);
               setPicked((p) => [...p, ...fresh.map(() => true)]);
+              setOriginals((o) => [...o, ...fresh]);
               setGenProgress(`Generated ${got}/${n}…`);
             },
           },
@@ -519,9 +547,52 @@ export default function Studio() {
   const lrunCounts = lrun ? runCounts(lrun) : null;
   const walletPrompts = Math.max(1, Math.ceil(chosen.length / 10));
   const runStatus = new Map((lrun?.items ?? []).map((it) => [it.idea.ticker, it.status] as const));
+  const ideaErrs = runErrors(ideas, picked, { venue: listOn });
+  const invalid = ideas.map((idea, i) => ({ i, idea, e: ideaErrs[i] })).filter((x) => picked[x.i] && hasErrors(x.e));
+  const editIdea = (i: number, patch: Partial<LaunchIdea>) => setIdeas((xs) => xs.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  const toggleEdit = (i: number) => setEditing((e) => { const n = new Set(e); n.has(i) ? n.delete(i) : n.add(i); return n; });
+  /** One LLM call for one idea (charged like any idea); avoids the run's other names/tickers. */
+  const regenIdea = async (i: number) => {
+    if (!account) return;
+    setRegen((r) => new Set(r).add(i));
+    setError(null);
+    try {
+      const token = await authToken(account);
+      if (!token) return;
+      const others = ideasRef.current.filter((_, j) => j !== i);
+      const base = prompt.trim().length >= 3 ? prompt.trim() : `${ideasRef.current[i]?.name}: ${ideasRef.current[i]?.tagline}`;
+      const r = await generate(base, account, token, 1, others.flatMap((x) => [x.name, x.ticker]).slice(-24), Math.floor(Math.random() * 300));
+      const seen = { names: new Set<string>(), tickers: new Set(others.map((x) => x.ticker)) };
+      const fresh = dedupeIdeas([r.ideas?.[0] ?? r.idea], seen)[0] ?? r.idea;
+      setIdeas((xs) => xs.map((x, j) => (j === i ? fresh : x)));
+      setOriginals((o) => o.map((x, j) => (j === i ? fresh : x)));
+      await refresh();
+    } catch (e) {
+      if (e instanceof UnauthorizedError) setSession(null);
+      setError(`regenerate failed: ${friendlyWalletError(e).message}`);
+    } finally {
+      setRegen((r) => { const n = new Set(r); n.delete(i); return n; });
+    }
+  };
+  const ideaProps = (idea: LaunchIdea, i: number) => ({
+    idea,
+    index: i,
+    errors: ideaErrs[i] ?? {},
+    edited: !!originals[i] && JSON.stringify(originals[i]) !== JSON.stringify(idea),
+    editing: editing.has(i),
+    regenerating: regen.has(i),
+    onToggleEdit: () => toggleEdit(i),
+    onChange: (patch: Partial<LaunchIdea>) => editIdea(i, patch),
+    onReset: () => originals[i] && setIdeas((xs) => xs.map((x, j) => (j === i ? originals[i] : x))),
+    onRegen: () => regenIdea(i),
+    onShuffle: () => setIdeas((xs) => xs.map((x, j) => (j === i ? shufflePalette(x) : x))),
+    aiCost,
+  });
   const removeIdea = (i: number) => {
     setIdeas((xs) => xs.filter((_, j) => j !== i));
     setPicked((p) => p.filter((_, j) => j !== i));
+    setOriginals((o) => o.filter((_, j) => j !== i));
+    setEditing((e) => new Set([...e].filter((j) => j !== i).map((j) => (j > i ? j - 1 : j))));
   };
 
   // Signed in (or tried to) with an account that isn't on the allowlist.
@@ -826,17 +897,26 @@ export default function Studio() {
             <button className="ghost" onClick={() => setPicked(ideas.map(() => false))}>None</button>
           </div>
         </div>
+        <p className="muted small">
+          Review before you yeet: click ✎ to edit a name, ticker, tagline, description or colours. The launch uses exactly what you see here
+          (token name and symbol on chain, the site at <code>/t/&lt;slug-of-name&gt;</code> and its copy). Edits are saved in this browser.{" "}
+          <button className="link" onClick={() => setEditing(editing.size ? new Set() : new Set(ideas.map((_, i) => i)))}>{editing.size ? "collapse all" : "edit all"}</button>
+        </p>
         {ideas.length <= CARD_MAX ? (
           <div className="idea-grid">
             {ideas.map((idea, i) => (
-              <IdeaCard
-                key={i}
-                idea={idea}
-                picked={ideas.length > 1 ? picked[i] : undefined}
-                onPick={(v) => setPicked((p) => p.map((x, j) => (j === i ? v : x)))}
-                onTicker={(ticker) => setIdeas((xs) => xs.map((x, j) => (j === i ? { ...x, ticker } : x)))}
-                onRemove={ideas.length > 1 ? () => removeIdea(i) : undefined}
-              />
+              <div key={i} className="idea-cell">
+                <IdeaCard
+                  idea={idea}
+                  picked={ideas.length > 1 ? picked[i] : undefined}
+                  onPick={(v) => setPicked((p) => p.map((x, j) => (j === i ? v : x)))}
+                  onTicker={(ticker) => editIdea(i, { ticker })}
+                  onRemove={ideas.length > 1 ? () => removeIdea(i) : undefined}
+                  onEdit={() => toggleEdit(i)}
+                  bad={hasErrors(ideaErrs[i] ?? {})}
+                />
+                {editing.has(i) && <IdeaEditor {...ideaProps(idea, i)} />}
+              </div>
             ))}
           </div>
         ) : (
@@ -844,11 +924,10 @@ export default function Studio() {
             {ideas.map((idea, i) => (
               <IdeaRow
                 key={i}
-                idea={idea}
+                {...ideaProps(idea, i)}
                 picked={picked[i] ?? false}
                 status={runStatus.get(idea.ticker)}
                 onPick={(v) => setPicked((p) => p.map((x, j) => (j === i ? v : x)))}
-                onTicker={(ticker) => setIdeas((xs) => xs.map((x, j) => (j === i ? { ...x, ticker } : x)))}
                 onRemove={() => removeIdea(i)}
               />
             ))}
@@ -952,7 +1031,14 @@ export default function Studio() {
           ))}
           {!q && session && qErr && <p className="muted small">Cost estimate unavailable: {qErr}</p>}
           <div className="row">
-          <button disabled={busy !== null || chosen.length === 0} onClick={startLaunch}>
+          {invalid.length > 0 && (
+            <p className="error small" role="alert">
+              Fix {invalid.length} selected idea{invalid.length > 1 ? "s" : ""} before launching:{" "}
+              {invalid.slice(0, 6).map((x) => `#${x.i + 1} ${x.idea.name || "(no name)"} (${Object.entries(x.e).map(([f, m]) => `${f}: ${m}`).join("; ")})`).join(" · ")}
+              {invalid.length > 6 ? ` · +${invalid.length - 6} more` : ""}
+            </p>
+          )}
+          <button disabled={busy !== null || chosen.length === 0 || invalid.length > 0} onClick={startLaunch}>
             {busy === "launch"
               ? "Launching…"
               : `${chosen.length > 1 ? `Launch ${chosen.length} tokens` : "Launch token"}${listOn === "rhea" ? " + list on Rhea" : listOn === "nearly" ? " on Nearly" : listOn === "justhoot" ? " on JustHoot" : ""}`}
@@ -1054,47 +1140,6 @@ function RunRow({ it }: { it: RunItem }) {
   );
 }
 
-/** Light row for big runs: small SVG icon, name, editable ticker, tagline; no heavy card preview. */
-function IdeaRow({
-  idea,
-  picked,
-  status,
-  onPick,
-  onTicker,
-  onRemove,
-}: {
-  idea: LaunchIdea;
-  picked: boolean;
-  status?: RunItem["status"];
-  onPick: (v: boolean) => void;
-  onTicker: (t: string) => void;
-  onRemove: () => void;
-}) {
-  return (
-    <div className={`idea-row${picked ? "" : " off"}`}>
-      <input type="checkbox" checked={picked} onChange={(e) => onPick(e.target.checked)} aria-label={`launch ${idea.name}`} />
-      <img src={tokenIconDataUri(idea)} alt="" width={36} height={36} loading="lazy" />
-      <div className="ir-body">
-        <div className="ir-top">
-          <strong className="ir-name" title={idea.description}>{idea.name}</strong>
-          <span className="ir-tk">
-            $
-            <input
-              value={idea.ticker}
-              maxLength={16}
-              onChange={(e) => onTicker(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16))}
-              aria-label={`ticker for ${idea.name}`}
-            />
-          </span>
-          {status && <span className="small">{STATUS_LABEL[status]}</span>}
-        </div>
-        <span className="ir-tag muted small">{idea.tagline}</span>
-      </div>
-      <button className="link ir-x" onClick={onRemove} aria-label={`remove ${idea.name}`} title="Remove">✕</button>
-    </div>
-  );
-}
-
 const GA_RE = /^G-[A-Z0-9]{4,12}$/;
 
 /** Creator settings for a token page: optional own Google Analytics 4 id. */
@@ -1152,12 +1197,16 @@ function IdeaCard({
   picked,
   onPick,
   onRemove,
+  onEdit,
+  bad,
 }: {
   idea: LaunchIdea;
   onTicker: (t: string) => void;
   picked?: boolean;
   onPick: (v: boolean) => void;
   onRemove?: () => void;
+  onEdit?: () => void;
+  bad?: boolean;
 }) {
   const c = idea.colors;
   const pillText = readable(c.background, c.accent, 4.5) ? c.background : readable("#1b1433", c.accent, 4.5) ? "#1b1433" : "#ffffff";
@@ -1191,12 +1240,116 @@ function IdeaCard({
         {Object.entries(c).map(([k, v]) => (
           <span key={k} title={`${k} ${v}`} style={{ background: v }} />
         ))}
+        {bad && <span className="err-inline small" style={{ marginLeft: "auto" }}>⚠ fix</span>}
+        {onEdit && (
+          <button className="link idea-x" style={{ color: c.text, marginLeft: bad ? undefined : "auto" }} onClick={onEdit} aria-label={`edit ${idea.name}`}>
+            ✎ edit
+          </button>
+        )}
         {onRemove && (
-          <button className="link idea-x" style={{ color: c.text, marginLeft: "auto" }} onClick={onRemove} aria-label={`remove ${idea.name}`}>
+          <button className="link idea-x" style={{ color: c.text }} onClick={onRemove} aria-label={`remove ${idea.name}`}>
             remove
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+type IdeaEditProps = {
+  idea: LaunchIdea;
+  index: number;
+  errors: IdeaErrors;
+  edited: boolean;
+  editing: boolean;
+  regenerating: boolean;
+  aiCost: string | null;
+  onToggleEdit: () => void;
+  onChange: (patch: Partial<LaunchIdea>) => void;
+  onReset: () => void;
+  onRegen: () => void;
+  onShuffle: () => void;
+};
+
+const cleanTicker = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16);
+
+/** Inline editor for every launch field of an idea (name, ticker, tagline, description, colours). */
+function IdeaEditor({ idea, index, errors, edited, regenerating, aiCost, onChange, onReset, onRegen, onShuffle }: IdeaEditProps) {
+  const id = `idea-${index}`;
+  const err = (f: keyof IdeaErrors) => errors[f] && <span className="err-inline small" id={`${id}-${f}-err`}>{errors[f]}</span>;
+  const field = (f: keyof IdeaErrors) => ({ "aria-invalid": !!errors[f], "aria-describedby": errors[f] ? `${id}-${f}-err` : undefined });
+  return (
+    <div className="idea-edit">
+      <label>
+        Name <span className="muted small">{idea.name.length}/40 · site /t/{slugPreview(idea.name) || idea.ticker}</span>
+        <input value={idea.name} maxLength={60} onChange={(e) => onChange({ name: e.target.value })} {...field("name")} data-field="name" />
+        {err("name")}
+      </label>
+      <label>
+        Ticker / symbol <span className="muted small">${idea.ticker.toUpperCase()}</span>
+        <input value={idea.ticker} maxLength={16} onChange={(e) => onChange({ ticker: cleanTicker(e.target.value) })} {...field("ticker")} data-field="ticker" />
+        {err("ticker")}
+      </label>
+      <label className="wide">
+        Tagline <span className="muted small">{idea.tagline.length}/120</span>
+        <input value={idea.tagline} maxLength={140} onChange={(e) => onChange({ tagline: e.target.value })} {...field("tagline")} data-field="tagline" />
+        {err("tagline")}
+      </label>
+      <label className="wide">
+        Description <span className="muted small">{idea.description.length}/600</span>
+        <textarea rows={3} value={idea.description} maxLength={700} onChange={(e) => onChange({ description: e.target.value })} {...field("description")} data-field="description" />
+        {err("description")}
+      </label>
+      <div className="wide ie-colors">
+        <span className="small">Colours</span>
+        {(Object.keys(idea.colors) as (keyof LaunchIdea["colors"])[]).map((k) => (
+          <label key={k} className="small ie-color" title={k}>
+            <input type="color" value={idea.colors[k]} onChange={(e) => onChange({ colors: { ...idea.colors, [k]: e.target.value } })} aria-label={`${k} colour`} />
+            {k}
+          </label>
+        ))}
+        {err("colors")}
+      </div>
+      <div className="wide row ie-actions">
+        <button className="ghost mini" disabled={regenerating} onClick={onRegen} title="One new AI idea for this slot">
+          {regenerating ? "Regenerating…" : `↻ Regenerate idea${aiCost ? ` (${formatNear(BigInt(aiCost), 2)} NEAR)` : ""}`}
+        </button>
+        <button className="ghost mini" onClick={onShuffle} title="The icon is drawn from the ticker and colours; this rotates the colours (free)">🎨 New icon colours</button>
+        <button className="ghost mini" disabled={!edited} onClick={onReset}>Reset to original</button>
+      </div>
+    </div>
+  );
+}
+
+const slugPreview = (name: string) =>
+  name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
+
+/** Light row for big runs: small SVG icon (re-rendered from the edited ticker/colours), name, ticker, tagline; ✎ expands the editor. */
+function IdeaRow(props: IdeaEditProps & { picked: boolean; status?: RunItem["status"]; onPick: (v: boolean) => void; onRemove: () => void }) {
+  const { idea, picked, status, errors, editing, edited, onPick, onRemove, onToggleEdit, onChange } = props;
+  const bad = hasErrors(errors);
+  return (
+    <div className={`idea-row${picked ? "" : " off"}${editing ? " open" : ""}${bad ? " bad" : ""}`}>
+      <input type="checkbox" checked={picked} onChange={(e) => onPick(e.target.checked)} aria-label={`launch ${idea.name}`} />
+      <img src={tokenIconDataUri(idea)} alt="" width={36} height={36} loading="lazy" />
+      <div className="ir-body">
+        <div className="ir-top">
+          <strong className="ir-name" title={idea.description}>{idea.name || <em className="muted">no name</em>}</strong>
+          <span className="ir-tk">
+            $
+            <input value={idea.ticker} maxLength={16} onChange={(e) => onChange({ ticker: cleanTicker(e.target.value) })} aria-label={`ticker for ${idea.name}`} aria-invalid={!!errors.ticker} />
+          </span>
+          {edited && <span className="badge small">edited</span>}
+          {status && <span className="small">{STATUS_LABEL[status]}</span>}
+        </div>
+        <span className="ir-tag muted small">{idea.tagline}</span>
+        {bad && !editing && <span className="err-inline small">⚠ {Object.entries(errors).map(([f, m]) => `${f}: ${m}`).join("; ")}</span>}
+      </div>
+      <div className="ir-act">
+        <button className="link ir-x" onClick={onToggleEdit} aria-expanded={editing} aria-label={`edit ${idea.name}`} title="Edit">{editing ? "▴" : "✎"}</button>
+        <button className="link ir-x" onClick={onRemove} aria-label={`remove ${idea.name}`} title="Remove">✕</button>
+      </div>
+      {editing && <IdeaEditor {...props} />}
     </div>
   );
 }

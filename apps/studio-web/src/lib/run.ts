@@ -117,3 +117,34 @@ export function mark(run: LaunchRun, tickers: string[], status: ItemStatus, erro
   const s = new Set(tickers);
   return { ...run, items: run.items.map((it) => (s.has(it.idea.ticker) ? { ...it, status, ...(error !== undefined ? { error } : {}) } : it)) };
 }
+
+// ---- pre-launch draft: generated ideas plus the creator's edits ----
+export const DRAFT_KEY = "yeetpad.ideasDraft";
+export interface IdeasDraft {
+  v: 1;
+  account: string;
+  prompt: string;
+  ideas: LaunchIdea[];
+  originals: LaunchIdea[];
+  picked: boolean[];
+}
+export function loadDraft(account: string): IdeasDraft | null {
+  try {
+    const d = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null") as IdeasDraft | null;
+    if (!d || d.v !== 1 || d.account !== account || !Array.isArray(d.ideas) || !d.ideas.length) return null;
+    const n = d.ideas.length;
+    return { ...d, picked: Array.from({ length: n }, (_, i) => d.picked?.[i] ?? true), originals: Array.from({ length: n }, (_, i) => d.originals?.[i] ?? d.ideas[i]) };
+  } catch {
+    return null;
+  }
+}
+export function saveDraft(account: string, d: Omit<IdeasDraft, "v" | "account">) {
+  try {
+    if (!d.ideas.length) {
+      const cur = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null");
+      if (cur?.account === account) localStorage.removeItem(DRAFT_KEY);
+      return;
+    }
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ v: 1, account, ...d }));
+  } catch {}
+}

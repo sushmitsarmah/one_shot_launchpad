@@ -191,3 +191,18 @@ details summary { cursor: pointer; font-weight: 700; }
 .tokens-table .num { text-align: right; }
 .tokens-dash .admin-tools { flex-wrap: wrap; gap: 0.6rem; }
 .app-main .tokens-dash select { font: inherit; padding: 0.35rem 0.5rem; border: 2px solid var(--ink); border-radius: 10px; background: var(--white); }
+
+/* ---------- review / edit ideas before launch ---------- */
+.idea-cell { display: grid; gap: 0.5rem; align-content: start; }
+.idea-row.open { grid-column: 1 / -1; }
+.idea-row.bad { border-color: #c81e4b; }
+.ir-act { display: flex; gap: 0.5rem; align-items: center; }
+.idea-edit { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 0.6rem 1rem; padding: 0.7rem; border: 2px dashed var(--ink-soft); border-radius: 12px; background: var(--cream); color: var(--ink); }
+.idea-edit label { display: grid; gap: 0.25rem; font-weight: 700; font-size: 0.9rem; }
+.idea-edit .wide { grid-column: 1 / -1; }
+.app-main .idea-edit input:not([type="color"]), .app-main .idea-edit textarea { width: 100%; padding: 0.4rem 0.6rem; font-size: 0.95rem; margin: 0; }
+.app-main .idea-edit [aria-invalid="true"] { border-color: #c81e4b; box-shadow: 2px 2px 0 #c81e4b; }
+.ie-colors { display: flex; flex-wrap: wrap; gap: 0.5rem 0.9rem; align-items: center; }
+.ie-color { display: inline-flex !important; grid-auto-flow: column; align-items: center; gap: 0.3rem; font-weight: 400 !important; }
+.app-main .ie-color input[type="color"] { width: 2rem; height: 1.6rem; padding: 0; border: 2px solid var(--ink); border-radius: 6px; background: none; }
+.ie-actions { gap: 0.5rem; flex-wrap: wrap; }

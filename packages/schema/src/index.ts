@@ -15,10 +15,10 @@ export const Ticker = z
   .regex(/^[a-z][a-z0-9]{1,15}$/, "ticker: 2-16 chars, lowercase a-z/0-9, starts with a letter");
 
 export const LaunchIdea = z.object({
-  name: z.string().min(2).max(40),
+  name: z.string().trim().min(2).max(40),
   ticker: Ticker,
-  tagline: z.string().min(3).max(120),
-  description: z.string().min(10).max(600),
+  tagline: z.string().trim().min(3).max(120),
+  description: z.string().trim().min(10).max(600),
   colors: z.object({
     primary: hex,
     secondary: hex,
@@ -382,3 +382,4 @@ export type JusthootFinalizeResponse = NearlyFinalizeResponse;
 
 export { tokenIconDataUri, tokenIconSvg } from "./icon";
 export * from "./run";
+export * from "./validate";

@@ -150,6 +150,23 @@ describe("batch + sites (mock mode)", () => {
     expect((await post("/api/generate", { prompt: "sleepy owls", count: 1, seq: 10_000 }, t)).status).toBe(400);
   });
 
+  test("launch uses the creator's edited idea: name/symbol, slug from the edited name, description; bad edits are 400", async () => {
+    const t = await session("kim.testnet");
+    const edited = { ...idea("edtk"), name: "  My Edited Name  ", tagline: "edited tagline here", description: "Edited description that is long enough." };
+    const r = await post("/api/launch/batch", { ideas: [edited] }, t);
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.results[0].slug).toBe("my-edited-name");
+    const s = await (await app.request("/api/site/my-edited-name")).json();
+    expect(s.siteConfig.branding.name).toBe("My Edited Name");
+    expect(s.siteConfig.branding.ticker).toBe("EDTK");
+    expect(s.siteConfig.branding.description).toBe("Edited description that is long enough.");
+    expect(s.siteConfig.branding.tagline).toBe("edited tagline here");
+    for (const bad of [{ ...idea("edbad"), name: "   " }, { ...idea("edbad"), ticker: "EdBad" }, { ...idea("edbad"), description: "x".repeat(601) }, { ...idea("9bad") }]) {
+      expect((await post("/api/launch/batch", { ideas: [bad] }, t)).status).toBe(400);
+    }
+  });
+
   test("health reports the per-call chunk and the run size", async () => {
     const h = await (await app.request("/api/health")).json();
     expect(h.maxBatch).toBe(5);
