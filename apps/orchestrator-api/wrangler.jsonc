@@ -27,7 +27,7 @@
     // Admins: `bun run admin <account>.testnet && bun run deploy:api` from the repo root.
     "LOCKED": "1",
     "ALLOWED_ACCOUNTS": "",
-    "ADMIN_ACCOUNTS": "osl-e2e-mvhxupmb.testnet",
+    "ADMIN_ACCOUNTS": "osl-e2e-mvhxupmb.testnet,sillypuma1184.testnet",
     "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad.sushmitsarmah.workers.dev,http://localhost:4321"
   },
   // ---- Mainnet: `bun run deploy:api:mainnet` (worker one-shot-launchpad-api-mainnet). Not deployed yet. ----
