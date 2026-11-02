@@ -255,6 +255,15 @@ describe("loofta http shapes (live-recorded)", () => {
     expect(body).toEqual({ amount: 1, message: "Tip", is_private: false, return_url: "https://yeetpad.fun/t/x" });
     expect(url).toBe("https://pay.loofta.com/checkout/aB3xK9pQ?callback=https%3A%2F%2Fyeetpad.fun%2Ft%2Fx");
   });
+  test("create: the live 201 response (pay.loofta.xyz host, webhook_secret null) is accepted", async () => {
+    const live = "https://pay.loofta.xyz/checkout/IQawqs8l?callback=https%3A%2F%2Fyeetpad.fun%2F";
+    const url = await withFetch(() => json(201, { short_id: "IQawqs8l", url: live, amount: 1, message: "Yeetpad integration test", webhook_secret: null }), () => createPaymentLink(GOOD, 1, "Yeetpad integration test", "https://yeetpad.fun/"));
+    expect(url).toBe(live);
+    expect(isCheckoutUrl("https://pay.loofta.com/checkout/IQawqs8l")).toBe(true);
+    for (const bad of ["https://evil.loofta.xyz/checkout/IQawqs8l", "https://pay.loofta.xyz.evil.com/checkout/IQawqs8l", "http://pay.loofta.xyz/checkout/IQawqs8l", "https://u:p@pay.loofta.xyz/checkout/IQawqs8l", "https://pay.loofta.xyz/app?tab=send", "https://loofta.xyz/checkout/IQawqs8l"]) expect(isCheckoutUrl(bad)).toBe(false);
+    const err = await withFetch(() => json(201, { short_id: "x", url: "https://evil.example/checkout/abcd" }), () => createPaymentLink(GOOD, 1, "x", null)).catch((e) => e);
+    expect(err).toMatchObject({ code: "provider_error" });
+  });
   test("create: Loofta's 'no owner' 400 becomes provider_no_owner (409), other errors stay generic and never echo Loofta's text", async () => {
     const err = await withFetch(() => json(400, { message: "This API key has no owner to receive payments on behalf of.", error: "Bad Request", statusCode: 400 }), () => createPaymentLink(GOOD, 1, "x", null)).catch((e) => e);
     expect(err).toBeInstanceOf(KeyError);

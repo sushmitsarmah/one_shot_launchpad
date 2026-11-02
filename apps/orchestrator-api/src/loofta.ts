@@ -222,17 +222,22 @@ export async function createPaymentLink(apiKey: string, amountUsd: number, messa
   if (r.status === 400 && NO_OWNER_RE.test(await errorMessage(r)))
     throw new KeyError("the creator's Loofta key isn't linked to a Loofta account that can receive payments; they need to finish their Loofta account setup or replace the key", 409, "provider_no_owner");
   if (!r.ok) throw new KeyError(`Loofta couldn't create the payment (HTTP ${r.status})`, 502, "provider_error");
-  // Documented and live response: {short_id, url: "https://pay.loofta.com/checkout/<short_id>[?callback=<return_url>]", amount, message, webhook_secret}
+  // Live response (2026-11-02, HTTP 201): {short_id, url: "https://pay.loofta.xyz/checkout/<short_id>?callback=<return_url>", amount, message, webhook_secret: null}
   const j = (await r.json().catch(() => null)) as { url?: unknown } | null;
   const url = typeof j?.url === "string" ? j.url : "";
   if (!isCheckoutUrl(url)) throw new KeyError("Loofta returned an unexpected checkout link", 502, "provider_error");
   return url;
 }
+/**
+ * Loofta's own checkout hosts. Live (2026-11-02) the API returns `https://pay.loofta.xyz/checkout/<short_id>?callback=…`
+ * (308 to pay.loofta.com, then 307 to /checkout/<claim uuid>), while its docs show pay.loofta.com: accept both.
+ */
+export const LOOFTA_CHECKOUT_ORIGINS = ["https://pay.loofta.com", "https://pay.loofta.xyz"];
 export function isCheckoutUrl(url: string, payBase = config.looftaPayBase): boolean {
   try {
     const u = new URL(url);
-    const b = new URL(payBase);
-    return u.protocol === "https:" && u.origin === b.origin && /^\/checkout\/[A-Za-z0-9_-]{4,64}\/?$/.test(u.pathname);
+    const allowed = new Set([new URL(payBase).origin, ...LOOFTA_CHECKOUT_ORIGINS]);
+    return u.protocol === "https:" && !u.username && !u.password && allowed.has(u.origin) && /^\/checkout\/[A-Za-z0-9_-]{4,64}\/?$/.test(u.pathname);
   } catch {
     return false;
   }
