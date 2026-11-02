@@ -62,7 +62,7 @@ export const KEY_RATE_LIMIT = 10; // save/validate/test per account per hour
 export const MODELS_RATE_LIMIT = 30; // model list fetches per account per hour
 
 export class KeyError extends Error {
-  constructor(message: string, public status: 400 | 402 | 404 | 424 | 429 | 502 | 503 = 400, public code?: string) {
+  constructor(message: string, public status: 400 | 402 | 404 | 409 | 424 | 429 | 502 | 503 = 400, public code?: string) {
     super(message);
   }
 }

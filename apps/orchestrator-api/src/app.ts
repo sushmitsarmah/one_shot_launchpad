@@ -1333,7 +1333,19 @@ app.post("/api/loofta/checkout", async (c) => {
   }
   const name = found?.site.branding.ticker ?? ticker.toUpperCase();
   if (r.route === "checkout") {
-    const url = await createPaymentLink(r.apiKey!, amount, cleanMessage(body.data.message, `Tip for $${name}`), siteUrl(found?.site.slug ?? ticker));
+    let url: string;
+    try {
+      url = await createPaymentLink(r.apiKey!, amount, cleanMessage(body.data.message, `Tip for $${name}`), siteUrl(found?.site.slug ?? ticker));
+    } catch (e) {
+      // Loofta definitively refused the key (revoked, or its account can't receive payments): mark it invalid so the
+      // page falls back to the payout target (or hides) instead of failing every click; the creator sees lastError.
+      if (e instanceof KeyError && (e.code === "provider_auth" || e.code === "provider_no_owner")) {
+        const kv = kvStore();
+        const rec = await readLooftaKey(kv, owner);
+        if (rec) await writeLooftaKey(kv, owner, { ...rec, valid: false, validatedAt: Date.now(), lastError: e.code === "provider_no_owner" ? "Loofta says this key's account can't receive payments yet. Finish your Loofta account setup, then save or test the key again." : "Loofta rejected this key (invalid or revoked). Create a new one in Loofta → API key & branding." });
+      }
+      throw e;
+    }
     return c.json({ ...base, preview: false, url });
   }
   return c.json({ ...base, preview: false, url: sendUrl(r.payTo!, amount) });

@@ -178,9 +178,20 @@ async function looftaFetch(path: string, apiKey: string, init: RequestInit = {})
   return r;
 }
 export type LooftaValidation = { ok: true } | { ok: false; status: number; error: string };
+/** Loofta's JSON error `message` (NestJS: string or string[]), only ever used for matching, never shown. */
+async function errorMessage(r: Response): Promise<string> {
+  const j = (await r.json().catch(() => null)) as { message?: unknown } | null;
+  const m = j?.message;
+  return Array.isArray(m) ? m.map(String).join("; ") : typeof m === "string" ? m : "";
+}
+/** Loofta's 400 for a key whose Loofta account can't receive payments (checked live, 2026-11-02). */
+export const NO_OWNER_RE = /no owner to receive payments/i;
 /**
- * Harmless key check: look up a payment link that can't exist. Loofta answers 401 "Invalid or revoked
- * integrator API key" for a bad key (checked live) and, for a good key, a not-found for the random id.
+ * Harmless key check: look up a payment link that can't exist. Checked live (2026-11-02): a bad key gets
+ * 401 "Invalid or revoked integrator API key", no key 401 "Missing integrator API key", and a valid key
+ * 404 "Payment link not found". A route-level 404 ("Cannot GET /payment-links/…", NestJS) means the endpoint
+ * moved and says nothing about the key, so it is not accepted. Note: this can't tell whether the key's
+ * Loofta account can receive payments ("no owner"); only creating a link does (see createPaymentLink).
  */
 export async function validateLooftaKey(apiKey: string): Promise<LooftaValidation> {
   const id = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, "0")).join("");
@@ -192,7 +203,11 @@ export async function validateLooftaKey(apiKey: string): Promise<LooftaValidatio
   }
   if (r.status === 401) return { ok: false, status: 400, error: "Loofta rejected the key (invalid or revoked). Create a new one in Loofta → API key & branding." };
   if (r.status === 403) return { ok: false, status: 400, error: "Loofta says this key can't manage payment links (HTTP 403). Give it the payment_links scope." };
-  if (r.status === 404 || r.ok) return { ok: true };
+  if (r.status === 404) {
+    if (/^Cannot [A-Z]+ \//.test(await errorMessage(r))) return { ok: false, status: 502, error: "Loofta's key-check endpoint isn't there any more (HTTP 404 route not found); try again later." };
+    return { ok: true };
+  }
+  if (r.ok) return { ok: true };
   if (r.status === 429) return { ok: false, status: 429, error: "Loofta rate limit reached (HTTP 429); try again in a minute." };
   return { ok: false, status: 502, error: `Loofta returned HTTP ${r.status} while checking the key; try again later.` };
 }
@@ -204,7 +219,10 @@ export async function createPaymentLink(apiKey: string, amountUsd: number, messa
   });
   if (r.status === 401 || r.status === 403) throw new KeyError("the creator's Loofta key was rejected; they need to replace it", 502, "provider_auth");
   if (r.status === 429) throw new KeyError("Loofta is busy right now (rate limit); try again in a minute", 429, "provider_rate");
+  if (r.status === 400 && NO_OWNER_RE.test(await errorMessage(r)))
+    throw new KeyError("the creator's Loofta key isn't linked to a Loofta account that can receive payments; they need to finish their Loofta account setup or replace the key", 409, "provider_no_owner");
   if (!r.ok) throw new KeyError(`Loofta couldn't create the payment (HTTP ${r.status})`, 502, "provider_error");
+  // Documented and live response: {short_id, url: "https://pay.loofta.com/checkout/<short_id>[?callback=<return_url>]", amount, message, webhook_secret}
   const j = (await r.json().catch(() => null)) as { url?: unknown } | null;
   const url = typeof j?.url === "string" ? j.url : "";
   if (!isCheckoutUrl(url)) throw new KeyError("Loofta returned an unexpected checkout link", 502, "provider_error");

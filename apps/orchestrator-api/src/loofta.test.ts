@@ -2,13 +2,16 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { KeyPair } from "near-api-js";
 import { LooftaPayTo } from "@osl/schema";
 import { signIn } from "./test-helpers";
-import { isCheckoutUrl, looftaKeyKey, looftaPageKey, looftaPayKey, maskEmail, sendUrl } from "./loofta";
+import { createPaymentLink, isCheckoutUrl, looftaKeyKey, looftaPageKey, looftaPayKey, maskEmail, sendUrl, validateLooftaKey } from "./loofta";
+import { KeyError } from "./llmkeys";
 import { kvStore } from "./sites";
 
 const RECIPIENT = "launch-vault.loofta.testnet";
 const MASTER = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
 const GOOD = "lft_live_GOODkey0123456789abcdWXYZ";
 const BAD = "lft_live_BADkey00000000000000000000";
+/** Valid key whose Loofta account can't receive payments (live: 400 "This API key has no owner to receive payments on behalf of."). */
+const NOOWNER = "lft_live_NOOWNERkey0123456789abcdOWNR";
 const EMAIL = "jane.creator@example.com";
 const idea = (ticker: string) => ({ name: `${ticker} coin`, ticker, tagline: "pay me", description: "A Loofta test token.", colors: { primary: "#ff4fa3", secondary: "#4cc9f0", accent: "#c6f432", background: "#1b1433", text: "#fff3dc" } });
 
@@ -32,6 +35,10 @@ beforeAll(async () => {
     const auth = new Headers(init?.headers).get("authorization");
     calls.push({ url, method: init?.method ?? "GET", auth, body: init?.body as string | undefined });
     if (init?.redirect !== "manual") return new Response("must not follow redirects", { status: 500 });
+    if (auth === `Bearer ${NOOWNER}`) {
+      if (init?.method === "POST") return new Response(JSON.stringify({ message: "This API key has no owner to receive payments on behalf of.", error: "Bad Request", statusCode: 400 }), { status: 400 });
+      return new Response(JSON.stringify({ message: "Payment link not found", error: "Not Found", statusCode: 404 }), { status: 404 });
+    }
     if (auth !== `Bearer ${GOOD}`) return new Response(JSON.stringify({ message: `Invalid or revoked integrator API key ${auth}` }), { status: 401 });
     if (url.includes("/payment-links/")) return new Response(JSON.stringify({ message: "not found" }), { status: 404 });
     if (url.endsWith("/payment-links") && init?.method === "POST") return new Response(JSON.stringify({ short_id: "abc123", url: "https://pay.loofta.com/checkout/abc123", amount: JSON.parse(String(init.body)).amount }));
@@ -185,6 +192,19 @@ describe("loofta api", () => {
       expect(calls.at(-1)).toMatchObject({ method: "POST", auth: `Bearer ${GOOD}` });
       expect(JSON.parse(calls.at(-1)!.body!)).toMatchObject({ amount: 7, message: "gm ser", is_private: false });
       expect(JSON.stringify(live)).not.toContain(GOOD);
+      // a key Loofta accepts but whose account can't receive payments: the click fails clearly (409), the key is
+      // marked invalid with our own message, and the page falls back to the payout target on the next click
+      expect((await call("PUT", "/api/loofta/key", { apiKey: NOOWNER }, owner)).status).toBe(200);
+      const no = await call("POST", "/api/loofta/checkout", { site: slug, amount: 2 });
+      const noText = await no.text();
+      expect(no.status).toBe(409);
+      expect(JSON.parse(noText)).toMatchObject({ code: "provider_no_owner" });
+      expect(noText).not.toContain("no owner to receive");
+      const after = await (await call("GET", "/api/loofta/settings", undefined, owner)).json();
+      expect(after.key).toMatchObject({ last4: "OWNR", valid: false });
+      expect(after.key.lastError).toMatch(/can't receive payments/);
+      expect(after.route).toBe("send");
+      expect(await (await call("POST", "/api/loofta/checkout", { site: slug, amount: 2 })).json()).toMatchObject({ preview: false, route: "send" });
       await call("DELETE", "/api/loofta/key", undefined, owner);
       const send = await (await call("POST", "/api/loofta/checkout", { site: slug, amount: 3 })).json();
       expect(send).toMatchObject({ preview: false, route: "send", url: "https://pay.loofta.com/app?tab=send&to=jane.creator%40example.com&method=email&amount=3" });
@@ -199,5 +219,48 @@ describe("loofta api", () => {
     expect((await call("POST", "/api/tokens/loofta", { tokens: ["lftone"], loofta: { enabled: false } }, owner)).status).toBe(200);
     expect(await kv.get(looftaPageKey("lftone"))).toBeFalsy();
     for (const l of logs) expect(l).not.toContain(GOOD);
+  });
+});
+
+// Response bodies recorded from the live Loofta API on 2026-11-02 (key check) and its docs (create response).
+describe("loofta http shapes (live-recorded)", () => {
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  async function withFetch<T>(handler: (url: string, init?: RequestInit) => Response, fn: () => Promise<T>): Promise<T> {
+    const prev = globalThis.fetch;
+    globalThis.fetch = (async (u: RequestInfo | URL, init?: RequestInit) => handler(String(u), init)) as typeof fetch;
+    try {
+      return await fn();
+    } finally {
+      globalThis.fetch = prev;
+    }
+  }
+  test("key check: valid key = 404 'Payment link not found'; bad key = 401; route-level 404 is not a pass", async () => {
+    expect(await withFetch(() => json(404, { message: "Payment link not found", error: "Not Found", statusCode: 404 }), () => validateLooftaKey(GOOD))).toEqual({ ok: true });
+    expect(await withFetch(() => json(401, { message: "Invalid or revoked integrator API key", error: "Unauthorized", statusCode: 401 }), () => validateLooftaKey(BAD))).toMatchObject({ ok: false, status: 400 });
+    expect(await withFetch(() => json(404, { message: "Cannot GET /payment-links/yeetcheck00", error: "Not Found", statusCode: 404 }), () => validateLooftaKey(GOOD))).toMatchObject({ ok: false, status: 502 });
+    const seen: string[] = [];
+    await withFetch((u, init) => (seen.push(`${init?.method ?? "GET"} ${u}`), json(404, { message: "Payment link not found" })), () => validateLooftaKey(GOOD));
+    expect(seen[0]).toMatch(/^GET https:\/\/api\.loofta\.com\/payment-links\/yeetcheck[0-9a-f]{12}$/);
+  });
+  test("create: request body accepted by Loofta's whitelist; response url (with ?callback) is returned", async () => {
+    let body: Record<string, unknown> = {};
+    const url = await withFetch(
+      (_u, init) => {
+        body = JSON.parse(String(init?.body));
+        return json(201, { short_id: "aB3xK9pQ", url: "https://pay.loofta.com/checkout/aB3xK9pQ?callback=https%3A%2F%2Fyeetpad.fun%2Ft%2Fx", amount: 1, message: "Tip", webhook_secret: "s" });
+      },
+      () => createPaymentLink(GOOD, 1, "Tip", "https://yeetpad.fun/t/x"),
+    );
+    expect(Object.keys(body).sort()).toEqual(["amount", "is_private", "message", "return_url"]);
+    expect(body).toEqual({ amount: 1, message: "Tip", is_private: false, return_url: "https://yeetpad.fun/t/x" });
+    expect(url).toBe("https://pay.loofta.com/checkout/aB3xK9pQ?callback=https%3A%2F%2Fyeetpad.fun%2Ft%2Fx");
+  });
+  test("create: Loofta's 'no owner' 400 becomes provider_no_owner (409), other errors stay generic and never echo Loofta's text", async () => {
+    const err = await withFetch(() => json(400, { message: "This API key has no owner to receive payments on behalf of.", error: "Bad Request", statusCode: 400 }), () => createPaymentLink(GOOD, 1, "x", null)).catch((e) => e);
+    expect(err).toBeInstanceOf(KeyError);
+    expect(err).toMatchObject({ status: 409, code: "provider_no_owner" });
+    const other = await withFetch(() => json(400, { message: ["amount must not be less than 0.01"] }), () => createPaymentLink(GOOD, 1, "x", null)).catch((e) => e);
+    expect(other).toMatchObject({ status: 502, code: "provider_error" });
+    expect(other.message).not.toContain("amount must");
   });
 });
