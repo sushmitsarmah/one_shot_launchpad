@@ -129,13 +129,15 @@ export interface IdeasDraft {
   picked: boolean[];
   /** Per-idea "enable NEAR Intents on its page after launch". */
   intents?: boolean[];
+  /** Per-idea "enable Loofta payments on its page after launch". */
+  loofta?: boolean[];
 }
 export function loadDraft(account: string): IdeasDraft | null {
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null") as IdeasDraft | null;
     if (!d || d.v !== 1 || d.account !== account || !Array.isArray(d.ideas) || !d.ideas.length) return null;
     const n = d.ideas.length;
-    return { ...d, picked: Array.from({ length: n }, (_, i) => d.picked?.[i] ?? true), intents: Array.from({ length: n }, (_, i) => d.intents?.[i] === true), originals: Array.from({ length: n }, (_, i) => d.originals?.[i] ?? d.ideas[i]) };
+    return { ...d, picked: Array.from({ length: n }, (_, i) => d.picked?.[i] ?? true), intents: Array.from({ length: n }, (_, i) => d.intents?.[i] === true), loofta: Array.from({ length: n }, (_, i) => d.loofta?.[i] === true), originals: Array.from({ length: n }, (_, i) => d.originals?.[i] ?? d.ideas[i]) };
   } catch {
     return null;
   }
@@ -171,4 +173,26 @@ export function saveIntentsPending(account: string, tickers: string[]) {
 export function intentsToApply(pending: string[], launches: { ticker: string; ownerId?: string; intents?: { enabled: boolean } | null; deletedAt?: number | null }[], account: string) {
   const want = new Set(pending);
   return launches.filter((l) => want.has(l.ticker) && (l.ownerId ?? account) === account && !l.intents?.enabled && !l.deletedAt).map((l) => l.ticker);
+}
+
+// ---- Loofta to switch on once these tickers are launched (same mechanics as NEAR Intents above) ----
+export const LOOFTA_PENDING_KEY = "yeetpad.looftaPending";
+export function loadLooftaPending(account: string): string[] {
+  try {
+    const d = JSON.parse(localStorage.getItem(LOOFTA_PENDING_KEY) ?? "null") as { account: string; tickers: string[] } | null;
+    return d?.account === account && Array.isArray(d.tickers) ? d.tickers : [];
+  } catch {
+    return [];
+  }
+}
+export function saveLooftaPending(account: string, tickers: string[]) {
+  try {
+    if (tickers.length) localStorage.setItem(LOOFTA_PENDING_KEY, JSON.stringify({ account, tickers: [...new Set(tickers)].slice(-500) }));
+    else localStorage.removeItem(LOOFTA_PENDING_KEY);
+  } catch {}
+}
+/** Pending tickers that are now launched by `account` and don't have Loofta on yet. */
+export function looftaToApply(pending: string[], launches: { ticker: string; ownerId?: string; loofta?: { enabled: boolean } | null; deletedAt?: number | null }[], account: string) {
+  const want = new Set(pending);
+  return launches.filter((l) => want.has(l.ticker) && (l.ownerId ?? account) === account && !l.loofta?.enabled && !l.deletedAt).map((l) => l.ticker);
 }

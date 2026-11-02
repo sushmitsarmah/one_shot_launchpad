@@ -17,6 +17,8 @@ import {
   type BatchLaunchResponse,
   type LaunchedToken,
   type IntentsConfig,
+  type LooftaSettings,
+  type LooftaToggle,
   type LaunchIdea,
   type QuoteResponse,
   type SessionResponse,
@@ -26,10 +28,11 @@ import "@near-wallet-selector/modal-ui/styles.css";
 import { initWallet, depositCredits, friendlyWalletError, sendForRelist, signCallsInChunks, signOut, takeRedirectedNearly, takeRedirectedRelist } from "../lib/wallet";
 import { viewCall } from "../lib/near";
 import { getVaultBalance, txFailure } from "../lib/near";
-import { tokensIntents } from "../lib/api";
+import { getLooftaSettings, tokensIntents, tokensLoofta } from "../lib/api";
+import LooftaKey from "./LooftaKey";
 import { classifyPull, minsFor, quotePosition, removablePositions, removeLiquidityCall, UNPROTECTED, type DclPosition, type PullItem, type PullResult } from "../lib/dcl";
 import { aiComputeCost, ApiError, isUserKeyError, tokensAction, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
-import { applyResults, intentsToApply, isDone, loadDraft, loadIntentsPending, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveIntentsPending, saveRun, type LaunchRun, type RunItem } from "../lib/run";
+import { applyResults, intentsToApply, isDone, loadDraft, loadIntentsPending, loadLooftaPending, looftaToApply, saveLooftaPending, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveIntentsPending, saveRun, type LaunchRun, type RunItem } from "../lib/run";
 import MyTokens from "./MyTokens";
 import { webpIcons } from "../lib/icon";
 import { DCL_CONTRACT, EXPLORER_BASE, NETWORK } from "../lib/config";
@@ -39,7 +42,7 @@ import Admin from "./Admin";
 import AiKey from "./AiKey";
 import { VAULT_CONTRACT } from "../lib/config";
 
-type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist" | "delete" | "intents";
+type Busy = null | "deposit" | "generate" | "launch" | "verify" | "settings" | "relist" | "delete" | "intents" | "loofta";
 type Tab = "studio" | "tokens" | "admin";
 const COUNT_PRESETS = [1, 5, 10, 25, 50, 100];
 /** Ideas list switches from full cards to light rows above this many. */
@@ -71,6 +74,11 @@ export default function Studio() {
   const [picked, setPicked] = useState<boolean[]>([]);
   /** Per idea: switch the NEAR Intents widget on for its page right after launch. */
   const [intentsOn, setIntentsOn] = useState<boolean[]>([]);
+  /** Per idea: switch the Loofta "pay the creator" widget on for its page right after launch. */
+  const [looftaOn, setLooftaOn] = useState<boolean[]>([]);
+  const looftaDefault = useRef(false);
+  /** The creator's Loofta settings (route + last 4 of the key only). */
+  const [loofta, setLoofta] = useState<LooftaSettings | null>(null);
   /** As generated (for "Reset to original"); parallel to `ideas`. */
   const [originals, setOriginals] = useState<LaunchIdea[]>([]);
   const [editing, setEditing] = useState<Set<number>>(new Set());
@@ -212,15 +220,40 @@ export default function Studio() {
       setIdeas(d.ideas);
       setPicked(d.picked);
       setIntentsOn(d.intents ?? []);
+      setLooftaOn(d.loofta ?? []);
       setOriginals(d.originals);
       if (d.prompt) setPrompt(d.prompt);
     }
   }, [account]);
   useEffect(() => {
     if (!account) return;
-    const t = setTimeout(() => saveDraft(account, { prompt, ideas, picked, originals, intents: intentsOn }), 300);
+    const t = setTimeout(() => saveDraft(account, { prompt, ideas, picked, originals, intents: intentsOn, loofta: looftaOn }), 300);
     return () => clearTimeout(t);
-  }, [account, prompt, ideas, picked, originals, intentsOn]);
+  }, [account, prompt, ideas, picked, originals, intentsOn, looftaOn]);
+
+  // Loofta readiness for My tokens and pending toggles (the Loofta card refreshes it after edits).
+  useEffect(() => {
+    if (!session?.token) return setLoofta(null);
+    getLooftaSettings(session.token).then(setLoofta).catch(() => setLoofta(null));
+  }, [session?.token]);
+
+  // Loofta chosen before launch: same as NEAR Intents below, once the creator has a key or payout target.
+  useEffect(() => {
+    if (!account || !launches || !session?.token || !loofta?.route) return;
+    const todo = looftaToApply(loadLooftaPending(account), launches, account);
+    if (!todo.length) return;
+    tokensLoofta(todo, { enabled: true }, session.token)
+      .then((res) => {
+        const ok = new Set(res.filter((r) => r.ok).map((r) => r.ticker));
+        saveLooftaPending(account, loadLooftaPending(account).filter((t) => !ok.has(t)));
+        if (ok.size) {
+          setNotice(`Loofta payments are on for ${ok.size} new token page${ok.size > 1 ? "s" : ""}.`);
+          void loadLaunches();
+        }
+      })
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, launches, session?.token, loofta?.route]);
 
   // NEAR Intents chosen before launch: switch it on for those tokens once they show up in My tokens
   // (works after reloads and redirect wallets too; pending tickers live in localStorage).
@@ -459,6 +492,24 @@ export default function Studio() {
         setProgress(null);
       }
     });
+  /** Loofta widget on/off (optionally with a per-page payout target) for many token pages; creator-only. */
+  const setLooftaFor = (tickers: string[], cfg: LooftaToggle) =>
+    run("loofta", async () => {
+      setNotice(null);
+      const token = await authToken(account!);
+      if (!token) return;
+      setProgress(`${cfg.enabled ? "Enabling" : "Disabling"} Loofta on ${tickers.length} page${tickers.length > 1 ? "s" : ""}…`);
+      try {
+        const res = await tokensLoofta(tickers, cfg, token);
+        const bad = res.filter((r) => !r.ok);
+        const ok = res.length - bad.length;
+        setNotice(`Loofta payments ${cfg.enabled ? "on" : "off"} for ${ok} page${ok === 1 ? "" : "s"}.`);
+        if (bad.length) setError(`Not changed: ${bad.map((b) => `${b.ticker.toUpperCase()} (${b.note})`).join(", ")}`);
+        await loadLaunches();
+      } finally {
+        setProgress(null);
+      }
+    });
   const restoreTokens = (tickers: string[]) =>
     run("delete", async () => {
       setNotice(null);
@@ -597,6 +648,8 @@ export default function Studio() {
       setResult(null);
       const withIntents = ideas.filter((x, i) => picked[i] && intentsOn[i]).map((x) => x.ticker);
       if (withIntents.length) saveIntentsPending(account!, [...loadIntentsPending(account!), ...withIntents]);
+      const withLoofta = ideas.filter((x, i) => picked[i] && looftaOn[i]).map((x) => x.ticker);
+      if (withLoofta.length) saveLooftaPending(account!, [...loadLooftaPending(account!), ...withLoofta]);
       setRun(newRun(account!, listOn, chosen, rheaOpts));
       await continueRun(token);
     });
@@ -630,6 +683,7 @@ export default function Studio() {
       setIdeas([]);
       setPicked([]);
       setIntentsOn([]);
+      setLooftaOn([]);
       setOriginals([]);
       setEditing(new Set());
       ideasRef.current = [];
@@ -685,6 +739,7 @@ export default function Studio() {
               setIdeas(ideasRef.current);
               setPicked((p) => [...p, ...fresh.map(() => true)]);
               setIntentsOn((p) => [...p, ...fresh.map(() => intentsDefault.current)]);
+              setLooftaOn((p) => [...p, ...fresh.map(() => looftaDefault.current)]);
               setOriginals((o) => [...o, ...fresh]);
               setGenProgress(`Generated ${got}/${n}…`);
             },
@@ -791,6 +846,7 @@ export default function Studio() {
     setIdeas((xs) => xs.filter((_, j) => j !== i));
     setPicked((p) => p.filter((_, j) => j !== i));
     setIntentsOn((p) => p.filter((_, j) => j !== i));
+    setLooftaOn((p) => p.filter((_, j) => j !== i));
     setOriginals((o) => o.filter((_, j) => j !== i));
     setEditing((e) => new Set([...e].filter((j) => j !== i).map((j) => (j > i ? j - 1 : j))));
   };
@@ -879,7 +935,7 @@ export default function Studio() {
           account={session?.accountId ?? account}
           launches={launches}
           busy={busy !== null}
-          progress={busy === "relist" || busy === "delete" || busy === "intents" ? progress : null}
+          progress={busy === "relist" || busy === "delete" || busy === "intents" || busy === "loofta" ? progress : null}
           onReload={loadLaunches}
           onListOnRhea={(ids) => relist(ids)}
           onDelete={deleteTokens}
@@ -889,6 +945,8 @@ export default function Studio() {
           lpResults={lpResults}
           onRetryLiquidity={retryLiquidity}
           onSetIntents={setIntentsFor}
+          onSetLoofta={setLooftaFor}
+          looftaReady={loofta === null ? null : !!loofta.route}
           onDismissLp={() => setLpResults(null)}
         />
         {error && <p className="error">{error}</p>}
@@ -1133,7 +1191,10 @@ export default function Studio() {
     </div>
 
     {session ? (
-      <AiKey key={`${session.accountId}:${keyEpoch}`} scope="user" getToken={adminToken} onAuthError={onAdminError} onChange={setMyKey} aiCost={aiCost} />
+      <>
+        <AiKey key={`${session.accountId}:${keyEpoch}`} scope="user" getToken={adminToken} onAuthError={onAdminError} onChange={setMyKey} aiCost={aiCost} />
+        <LooftaKey key={`loofta:${session.accountId}`} getToken={adminToken} onAuthError={onAdminError} onChange={setLoofta} />
+      </>
     ) : (
       <section className="card aikey run-full">
         <h2>AI key</h2>
@@ -1162,11 +1223,28 @@ export default function Studio() {
               />{" "}
               Enable NEAR Intents for all
             </label>
+            <label className="pick small loofta-all" title="Adds a Loofta 'pay the creator' button to each token page (needs your Loofta key or payout target, see Loofta payments above). Change it per token later in My tokens.">
+              <input
+                type="checkbox"
+                checked={ideas.length > 0 && ideas.every((_, i) => looftaOn[i])}
+                ref={(el) => {
+                  if (el) el.indeterminate = ideas.some((_, i) => looftaOn[i]) && !ideas.every((_, i) => looftaOn[i]);
+                }}
+                onChange={(e) => {
+                  looftaDefault.current = e.target.checked;
+                  setLooftaOn(ideas.map(() => e.target.checked));
+                }}
+              />{" "}
+              Enable Loofta for all
+            </label>
           </div>
         </div>
         <p className="muted small">
           Review before you yeet: click ✎ to edit a name, ticker, tagline, description or colours. The launch uses exactly what you see here
           (token name and symbol on chain, the site at <code>/t/&lt;slug-of-name&gt;</code> and its copy). Edits are saved in this browser.{" "}
+          {looftaOn.some(Boolean) && loofta && !loofta.route && (
+            <strong className="err-inline">Loofta needs your Loofta key or a payout target first (Loofta payments, above); until then it stays off on these pages. </strong>
+          )}
           <button className="link" onClick={() => setEditing(editing.size ? new Set() : new Set(ideas.map((_, i) => i)))}>{editing.size ? "collapse all" : "edit all"}</button>
         </p>
         {ideas.length <= CARD_MAX ? (
@@ -1183,6 +1261,8 @@ export default function Studio() {
                   bad={hasErrors(ideaErrs[i] ?? {})}
                   intents={intentsOn[i] ?? false}
                   onIntents={(v) => setIntentsOn((p) => ideas.map((_, j) => (j === i ? v : (p[j] ?? false))))}
+                  loofta={looftaOn[i] ?? false}
+                  onLoofta={(v) => setLooftaOn((p) => ideas.map((_, j) => (j === i ? v : (p[j] ?? false))))}
                 />
                 {editing.has(i) && <IdeaEditor {...ideaProps(idea, i)} />}
               </div>
@@ -1200,6 +1280,8 @@ export default function Studio() {
                 onRemove={() => removeIdea(i)}
                 intents={intentsOn[i] ?? false}
                 onIntents={(v) => setIntentsOn((p) => ideas.map((_, j) => (j === i ? v : (p[j] ?? false))))}
+                loofta={looftaOn[i] ?? false}
+                onLoofta={(v) => setLooftaOn((p) => ideas.map((_, j) => (j === i ? v : (p[j] ?? false))))}
               />
             ))}
           </div>
@@ -1472,6 +1554,8 @@ function IdeaCard({
   bad,
   intents,
   onIntents,
+  loofta,
+  onLoofta,
 }: {
   idea: LaunchIdea;
   onTicker: (t: string) => void;
@@ -1482,6 +1566,8 @@ function IdeaCard({
   bad?: boolean;
   intents?: boolean;
   onIntents?: (v: boolean) => void;
+  loofta?: boolean;
+  onLoofta?: (v: boolean) => void;
 }) {
   const c = idea.colors;
   const pillText = readable(c.background, c.accent, 4.5) ? c.background : readable("#1b1433", c.accent, 4.5) ? "#1b1433" : "#ffffff";
@@ -1514,6 +1600,11 @@ function IdeaCard({
       {onIntents && (
         <label className="pick small idea-intents" title="NEAR Intents widget on this token's page: buy or tip with any crypto (mainnet)">
           <input type="checkbox" checked={!!intents} onChange={(e) => onIntents(e.target.checked)} /> NEAR Intents on its page
+        </label>
+      )}
+      {onLoofta && (
+        <label className="pick small idea-intents" title="Loofta 'pay the creator' button on this token's page (needs your Loofta key or payout target)">
+          <input type="checkbox" checked={!!loofta} onChange={(e) => onLoofta(e.target.checked)} /> Loofta payments on its page
         </label>
       )}
       <div className="swatches">
@@ -1605,8 +1696,8 @@ const slugPreview = (name: string) =>
   name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
 
 /** Light row for big runs: small SVG icon (re-rendered from the edited ticker/colours), name, ticker, tagline; ✎ expands the editor. */
-function IdeaRow(props: IdeaEditProps & { picked: boolean; status?: RunItem["status"]; onPick: (v: boolean) => void; onRemove: () => void; intents: boolean; onIntents: (v: boolean) => void }) {
-  const { idea, picked, status, errors, editing, edited, onPick, onRemove, onToggleEdit, onChange, intents, onIntents } = props;
+function IdeaRow(props: IdeaEditProps & { picked: boolean; status?: RunItem["status"]; onPick: (v: boolean) => void; onRemove: () => void; intents: boolean; onIntents: (v: boolean) => void; loofta: boolean; onLoofta: (v: boolean) => void }) {
+  const { idea, picked, status, errors, editing, edited, onPick, onRemove, onToggleEdit, onChange, intents, onIntents, loofta, onLoofta } = props;
   const bad = hasErrors(errors);
   return (
     <div className={`idea-row${picked ? "" : " off"}${editing ? " open" : ""}${bad ? " bad" : ""}`}>
@@ -1628,6 +1719,9 @@ function IdeaRow(props: IdeaEditProps & { picked: boolean; status?: RunItem["sta
       <div className="ir-act">
         <label className="pick small ir-intents" title="NEAR Intents widget on this token's page">
           <input type="checkbox" checked={intents} onChange={(e) => onIntents(e.target.checked)} aria-label={`NEAR Intents for ${idea.name}`} /> Intents
+        </label>
+        <label className="pick small ir-intents" title="Loofta 'pay the creator' button on this token's page">
+          <input type="checkbox" checked={loofta} onChange={(e) => onLoofta(e.target.checked)} aria-label={`Loofta for ${idea.name}`} /> Loofta
         </label>
         <button className="link ir-x" onClick={onToggleEdit} aria-expanded={editing} aria-label={`edit ${idea.name}`} title="Edit">{editing ? "▴" : "✎"}</button>
         <button className="link ir-x" onClick={onRemove} aria-label={`remove ${idea.name}`} title="Remove">✕</button>

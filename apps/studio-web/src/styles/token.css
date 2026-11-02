@@ -70,3 +70,4 @@
 .tki-foot a { color: inherit; font-weight: 700; }
 @media (max-width: 560px) { .tki-actions .btn { width: 100%; } }
 .tk-intents [hidden] { display: none !important; }
+.tk-loofta { border-top-color: var(--tk-accent); }

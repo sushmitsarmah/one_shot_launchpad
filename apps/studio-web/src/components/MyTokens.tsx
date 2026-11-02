@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { tokenIconDataUri, type IntentsConfig, type IntentsMode, type LaunchedToken } from "@osl/schema";
+import { tokenIconDataUri, type IntentsConfig, type IntentsMode, type LaunchedToken, type LooftaToggle } from "@osl/schema";
+import { LOOFTA_TARGET_KINDS, payToFrom, type LooftaTargetKind } from "./LooftaKey";
 import { EXPLORER_BASE } from "../lib/config";
 import {
   fmtUnits,
@@ -49,6 +50,8 @@ export default function MyTokens({
   onRetryLiquidity,
   onDismissLp,
   onSetIntents,
+  onSetLoofta,
+  looftaReady,
 }: {
   account: string;
   launches: LaunchedToken[] | null;
@@ -68,6 +71,10 @@ export default function MyTokens({
   onDismissLp: () => void;
   /** NEAR Intents widget on/off (and mode) for these tickers' pages. */
   onSetIntents: (tickers: string[], cfg: IntentsConfig) => void;
+  /** Loofta widget on/off for these tickers' pages, optionally with a per-page payout target. */
+  onSetLoofta: (tickers: string[], cfg: LooftaToggle) => void;
+  /** Creator has a Loofta key or payout target (null = unknown). */
+  looftaReady: boolean | null;
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<VenueFilter>("all");
@@ -78,6 +85,8 @@ export default function MyTokens({
   const [confirmDel, setConfirmDel] = useState<LaunchedToken[] | null>(null);
   const [retryLp, setRetryLp] = useState<PullResult[] | null>(null);
   const [intentsMode, setIntentsMode] = useState<IntentsMode>("both");
+  const [lftKind, setLftKind] = useState<LooftaTargetKind | "default">("default");
+  const [lftTarget, setLftTarget] = useState("");
 
   const everything = launches ?? [];
   const deletedCount = everything.filter((l) => l.deletedAt).length;
@@ -111,6 +120,14 @@ export default function MyTokens({
   const intentsAble = visibleSel.filter((l) => !l.deletedAt);
   const intentsCfg = (enabled: boolean, l?: LaunchedToken): IntentsConfig => ({ enabled, mode: l?.intents?.mode ?? intentsMode, tipAsset: l?.intents?.tipAsset ?? "usdc", ...(l?.intents?.recipient ? { recipient: l.intents.recipient } : {}) });
 
+  /** Bulk Loofta payout target: "default" keeps each page's own setting; otherwise a validated per-page override. */
+  const lftOverride = lftKind === "default" ? null : lftTarget.trim() ? payToFrom(lftKind, lftTarget) : { ok: false as const, error: "enter the payout target" };
+  const looftaCfg = (enabled: boolean): LooftaToggle | null => {
+    if (!enabled || lftKind === "default") return { enabled };
+    return lftOverride?.ok ? { enabled, payTo: lftOverride.payTo } : null;
+  };
+  const looftaLabel = (l: LaunchedToken) => (l.loofta?.enabled ? (l.loofta.ready ? (l.loofta.custom ? "on · own target" : "on") : "on · not set up") : "off");
+
   const copy = async (id: string) => {
     try {
       await navigator.clipboard.writeText(id);
@@ -120,14 +137,14 @@ export default function MyTokens({
   };
 
   const exportCsv = () => {
-    const cols = ["name", "ticker", "launched", "site", "contract", "contract_url", "launch_tx", "venue", "venue_url", "views", "near_intents"];
+    const cols = ["name", "ticker", "launched", "site", "contract", "contract_url", "launch_tx", "venue", "venue_url", "views", "near_intents", "loofta"];
     const esc = (v: unknown) => {
       const s = String(v ?? "");
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = [cols.join(",")].concat(
       visible.map((l) =>
-        [l.name ?? "", l.ticker, new Date(l.createdAt).toISOString(), new URL(siteHref(l), location.origin).toString(), l.tokenId, l.explorerUrl, txUrl(l) ?? "", VENUE_LABEL[venueOf(l)], l.venueUrl ?? "", l.views ?? "", l.intents?.enabled ? l.intents.mode : "off"]
+        [l.name ?? "", l.ticker, new Date(l.createdAt).toISOString(), new URL(siteHref(l), location.origin).toString(), l.tokenId, l.explorerUrl, txUrl(l) ?? "", VENUE_LABEL[venueOf(l)], l.venueUrl ?? "", l.views ?? "", l.intents?.enabled ? l.intents.mode : "off", looftaLabel(l)]
           .map(esc)
           .join(","),
       ),
@@ -204,6 +221,32 @@ export default function MyTokens({
                 <button className="ghost" disabled={busy} onClick={() => onSetIntents(intentsAble.map((l) => l.ticker), intentsCfg(false))}>Disable</button>
               </span>
             )}
+            {intentsAble.length > 0 && (
+              <span className="row intents-bulk loofta-bulk">
+                <select value={lftKind} onChange={(e) => setLftKind(e.target.value as LooftaTargetKind | "default")} aria-label="Loofta payout target">
+                  <option value="default">Loofta: my key / payout target</option>
+                  {LOOFTA_TARGET_KINDS.map((k) => (
+                    <option key={k.id} value={k.id}>Loofta: pay to {k.label}…</option>
+                  ))}
+                </select>
+                {lftKind !== "default" && (
+                  <input className="loofta-target" value={lftTarget} onChange={(e) => setLftTarget(e.target.value)} placeholder={LOOFTA_TARGET_KINDS.find((k) => k.id === lftKind)?.placeholder} aria-label="Loofta payout target for these pages" maxLength={254} autoComplete="off" />
+                )}
+                <button
+                  className="mini"
+                  disabled={busy || !looftaCfg(true) || (lftKind === "default" && looftaReady === false)}
+                  title={lftKind === "default" && looftaReady === false ? "Save your Loofta key or a payout target first (Studio → Loofta payments)" : undefined}
+                  onClick={() => onSetLoofta(intentsAble.map((l) => l.ticker), looftaCfg(true)!)}
+                >
+                  Enable Loofta ({intentsAble.length})
+                </button>
+                <button className="ghost" disabled={busy} onClick={() => onSetLoofta(intentsAble.map((l) => l.ticker), { enabled: false })}>Disable</button>
+                {lftKind !== "default" && lftTarget.trim() && lftOverride && !lftOverride.ok && <span className="error small">{lftOverride.error}</span>}
+                {lftKind === "default" && looftaReady === false && (
+                  <span className="muted small">Loofta isn't set up: save your Loofta key or a payout target in Studio → Loofta payments (or pick a payout target here).</span>
+                )}
+              </span>
+            )}
             {deletable.length > 0 && (
               <button className="ghost danger" disabled={busy} onClick={() => setConfirmDel(deletable)}>Delete {deletable.length}…</button>
             )}
@@ -273,14 +316,15 @@ export default function MyTokens({
                 <th>Venue</th>
                 <th>Views</th>
                 <th title="NEAR Intents widget on the token page: visitors buy or tip with any crypto (settles on mainnet)">Intents</th>
+                <th title="Loofta 'pay the creator' button on the token page (needs your Loofta key or a payout target)">Loofta</th>
                 <th className="c-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
               {launches === null ? (
-                <tr><td colSpan={11} className="muted admin-empty">Loading…</td></tr>
+                <tr><td colSpan={12} className="muted admin-empty">Loading…</td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={11} className="muted admin-empty">{all.length ? "Nothing matches." : "Nothing yeeted yet. Launch from the Studio tab."}</td></tr>
+                <tr><td colSpan={12} className="muted admin-empty">{all.length ? "Nothing matches." : "Nothing yeeted yet. Launch from the Studio tab."}</td></tr>
               ) : (
                 visible.map((l) => {
                   const v = venueOf(l);
@@ -331,6 +375,21 @@ export default function MyTokens({
                             aria-label={`NEAR Intents for ${l.ticker}`}
                           />{" "}
                           {l.intents?.enabled ? (l.intents.mode === "both" ? "buy+tip" : l.intents.mode) : "off"}
+                        </label>
+                      </td>
+                      <td className="c-intents">
+                        <label
+                          className="pick small"
+                          title={l.loofta?.enabled && !l.loofta.ready ? "On, but hidden: save your Loofta key or a payout target first" : looftaReady === false && !l.loofta?.custom ? "Set up Loofta first (Studio → Loofta payments)" : looftaLabel(l)}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!!l.loofta?.enabled}
+                            disabled={busy || !!l.deletedAt || (!l.loofta?.enabled && looftaReady === false && !l.loofta?.custom)}
+                            onChange={(e) => onSetLoofta([l.ticker], { enabled: e.target.checked })}
+                            aria-label={`Loofta for ${l.ticker}`}
+                          />{" "}
+                          {looftaLabel(l)}
                         </label>
                       </td>
                       <td className="c-actions">

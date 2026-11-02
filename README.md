@@ -136,6 +136,8 @@ Routes in the web app: `/` is the landing page, `/app/` is the studio (wallet co
 | `AUTH_RECIPIENT` | `VAULT_CONTRACT` | NEP-413 `recipient` the sign-in must be addressed to (the web app uses the vault id) |
 | `LOCKED` | **on** | access gate; `0`/`false` opens the app to every account (see [Access gate](#access-gate-whitelist)) |
 | `ALLOWED_ACCOUNTS` | empty | comma-separated NEAR account ids allowed in while `LOCKED` |
+| `ONECLICK_BASE_URL` / `ONECLICK_JWT` | `https://1click.chaindefuser.com` / – | NEAR Intents widget; the JWT (secret) is optional and only removes 1Click's unauthenticated fee |
+| `LOOFTA_API_BASE` / `LOOFTA_PAY_BASE` | `https://api.loofta.com` / `https://pay.loofta.com` | Loofta widget. No platform key: creators bring their own (see [Token page payments](#token-page-payments-near-intents--loofta)) |
 
 ### `apps/studio-web/.env` (build-time, `PUBLIC_*`)
 
@@ -232,6 +234,28 @@ The format fallback is json_schema → json_object → no `response_format` (onl
 * **Write-only**: no endpoint returns a key (only provider, model, last 4, dates, validity). Provider error text is dropped (it can echo the key); `llm_usage` logs carry source/provider/model/token counts only.
 * **Limits**: 10 key saves/tests and 30 model lists per account per hour; keys are whitespace-stripped, 8-512 printable ASCII characters.
 * Endpoints: `GET /api/llm/providers`; session: `GET|PUT|DELETE /api/llm/key`, `POST /api/llm/key/test`, `POST /api/llm/models`; admin: `GET|PUT|DELETE /api/admin/llm-key`, `POST /api/admin/llm-key/test`, `POST /api/admin/llm-models`. Tests: `src/llmkeys.test.ts`.
+
+## Token page payments: NEAR Intents + Loofta
+
+Two optional, independent widgets on `/t/<slug>` (a page can have either, both or neither). Both are **off by default**, switched per page in **My tokens** (bulk bar + per-row column) or before launch in the Studio (per idea, or "Enable … for all"; applied once the token shows up in My tokens). Both carry no Yeetpad branding and add no fee.
+
+### NEAR Intents widget
+
+* Buy (any asset → wNEAR via 1Click → swap to the token on Rhea with the visitor's wallet) and/or tip the creator in USDC/wNEAR. KV `intents:<ticker>`; `POST /api/tokens/intents` (creator or admin, ≤50 tickers); `GET /api/site/:id` → `intents`.
+* Quotes go through `POST /api/intents/quote` (the server picks the destination, never adds app fees). **Off mainnet only dry quotes**: prices, never a deposit address. Status: `GET /api/intents/status`.
+* Checks: `TICKERS=… bun scripts/e2e-intents.ts`, `SLUG=… bun scripts/headless-token.ts`.
+
+### Loofta widget ("Tip the creator")
+
+[Loofta](https://loofta.com) takes payments in any token on any chain and settles USDC on Solana for the recipient (cash-out to Venmo/Cash App/Revolut/Zelle). Payers pay Loofta's fees; the recipient gets the amount. Loofta's pages send `frame-ancestors 'none'`, so the widget opens Loofta in a new tab. **Loofta has no sandbox** (API keys are live), so off mainnet the widget is a preview: no payment link is created and no Loofta URL is returned.
+
+Two routes; the server picks one per page: page payout target > creator's key > creator's payout target. The toggle is refused (`409`, "set up Loofta first") until the creator has a key or a payout target.
+
+* **checkout (creator's own Loofta key, optional)**: Studio → **Loofta payments**, next to the AI key. The key (`lft_…`, created in Loofta → API key & branding, scope `payment_links:create`) is checked with a harmless `GET /payment-links/<random id>` (401 = rejected, not stored) and stored exactly like AI keys: AES-256-GCM under `KEY_ENCRYPTION_KEY`, AAD `yeetpad-llmkey|v1|<account>|loofta`, KV `looftakey:<account>`, write-only (only the last 4 characters are ever returned). On mainnet each click makes the API call `POST https://api.loofta.com/payment-links` with the page owner's key (`{amount, message, is_private: false, return_url: <token page>}`) and returns only the `https://pay.loofta.com/checkout/<id>` URL. What the key adds: nothing about the creator is revealed, a fresh one-off guest checkout per payment (any token/chain, no Loofta sign-in), and the exact amount on the creator's Loofta account.
+* **send (no key)**: the creator saves a payout target: email, X/Discord/GitHub/Telegram handle, or Loofta username (validated; Solana addresses aren't supported because Loofta's links can't prefill them). It's encrypted too (KV `looftapay:<account>`, per-page overrides inside `loofta:<ticker>`, AAD `…|<account or ticker:x>|loofta-payto`) and never in page config, HTML or `GET /api/launches`; visitors see a label only ("@name on X", "the creator (by email)"). On mainnet a click returns Loofta's Send link (`/app?tab=send&to=…&method=email|social&platform=…&amount=…`, or `payto=<username>`). Caveat: after clicking, the payer's browser sees the target in that Loofta URL. Guests pay from a Solana wallet for email/social; username links need a Loofta sign-in.
+* Endpoints: session `GET /api/loofta/settings`, `PUT|DELETE /api/loofta/key`, `POST /api/loofta/key/test`, `PUT /api/loofta/payto` (`{payTo: null}` clears); `POST /api/tokens/loofta` `{tokens, loofta: {enabled, payTo?}}` (creator or admin, ≤50; `payTo: null` clears a page override); public `POST /api/loofta/checkout` `{site, amount (USD 1–10000), message?}` (20 per IP per 10 min). `GET /api/site/:id` → `loofta: {enabled, route, label, preview} | null`; launches carry `loofta: {enabled, ready, custom}`.
+* Checks: `src/loofta.test.ts`, `TICKERS=… bun scripts/e2e-loofta.ts` (bogus key rejected by Loofta, example.com target, preview checkout, no target in public responses), `SLUG=… bun scripts/headless-loofta.ts`.
+* Not used: Loofta's npm `@loofta/pay-sdk` (a React button that needs a Loofta-issued `organizationId`) and the payouts API (it sends from the integrator's own balance).
 
 ## Deploy contracts (testnet)
 

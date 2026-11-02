@@ -83,6 +83,10 @@ export function buildConfig(src: EnvSource = {}) {
     // without it 1Click adds its unauthenticated platform fee; Yeetpad adds no fee of its own either way.
     oneClickBaseUrl: env("ONECLICK_BASE_URL", "https://1click.chaindefuser.com") as string,
     oneClickJwt: env("ONECLICK_JWT"),
+    // Loofta (pay the creator). No platform key: creators bring their own Loofta integrator key (stored like AI keys).
+    // The documented api.loofta.xyz redirect-loops; api.loofta.com is the live API (GET /health).
+    looftaApiBase: (env("LOOFTA_API_BASE", "https://api.loofta.com") as string).replace(/\/$/, ""),
+    looftaPayBase: (env("LOOFTA_PAY_BASE", "https://pay.loofta.com") as string).replace(/\/$/, ""),
     // JustHoot (mainnet only): the creator's wallet calls `launch_meme`. Off until mainnet launch.
     justhootEnabled: flag("JUSTHOOT_ENABLED"),
     justhootFactory: env("JUSTHOOT_FACTORY", "v2-launchpad.justhoot.near") as string,

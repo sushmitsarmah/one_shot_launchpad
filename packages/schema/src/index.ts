@@ -192,6 +192,8 @@ export const LaunchedToken = z.object({
   deletedByAdmin: z.boolean().optional(),
   /** NEAR Intents widget settings for the token page (absent = off). */
   intents: z.lazy(() => IntentsConfig).optional(),
+  /** Loofta "pay the creator" widget state (never the payout target). */
+  loofta: z.object({ enabled: z.boolean(), ready: z.boolean(), custom: z.boolean() }).optional(),
 });
 export type LaunchedToken = z.infer<typeof LaunchedToken>;
 
@@ -498,4 +500,93 @@ export interface PlatformKeyInfo {
   env: { configured: boolean; baseUrl: string; provider: LlmProvider | null; model: string; last4: string | null };
   /** What generation uses now: the stored platform key when it's valid, else the env secret. */
   active: "platform" | "env";
+}
+
+// ---------- Loofta (pay the creator by email / social handle / Loofta account) on token pages ----------
+/**
+ * Loofta (loofta.com) has two routes, picked server-side per page:
+ *  - "checkout": the creator saved their own Loofta integrator API key; the API creates a fresh Loofta payment
+ *    link per payment (POST /payment-links) that pays the creator's Loofta account. Nothing about the creator
+ *    is revealed to visitors.
+ *  - "send": no key needed; opens Loofta's Send page with the creator's payout target (email, social handle or
+ *    Loofta username) filled in. The target is stored encrypted and only handed out per click, never in page config.
+ */
+export const LOOFTA_SOCIALS = ["twitter", "discord", "github", "telegram"] as const;
+export const LooftaSocial = z.enum(LOOFTA_SOCIALS);
+export type LooftaSocial = z.infer<typeof LooftaSocial>;
+export const LOOFTA_SOCIAL_LABEL: Record<LooftaSocial, string> = { twitter: "X", discord: "Discord", github: "GitHub", telegram: "Telegram" };
+const LOOFTA_HANDLE_RE: Record<LooftaSocial, RegExp> = {
+  twitter: /^[A-Za-z0-9_]{1,15}$/,
+  discord: /^[a-z0-9_.]{2,32}$/,
+  github: /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/,
+  telegram: /^[A-Za-z][A-Za-z0-9_]{4,31}$/,
+};
+export const looftaHandleOk = (platform: LooftaSocial, handle: string) => LOOFTA_HANDLE_RE[platform].test(handle);
+const stripAt = (s: string) => s.trim().replace(/^@+/, "");
+export const LooftaPayTo = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("email"), value: z.string().trim().toLowerCase().max(254).pipe(z.email("enter a valid email address")) }).strict(),
+  z
+    .object({ kind: z.literal("social"), platform: LooftaSocial, value: z.string().max(64).transform(stripAt) })
+    .strict()
+    .refine((p) => looftaHandleOk(p.platform, p.value), { message: "that isn't a valid handle for this platform", path: ["value"] }),
+  z
+    .object({ kind: z.literal("username"), value: z.string().max(64).transform((s) => stripAt(s).toLowerCase()) })
+    .strict()
+    .refine((p) => /^[a-z0-9][a-z0-9_.-]{1,31}$/.test(p.value), { message: "that isn't a valid Loofta username", path: ["value"] }),
+]);
+export type LooftaPayTo = z.infer<typeof LooftaPayTo>;
+export const LOOFTA_ROUTES = ["checkout", "send"] as const;
+export type LooftaRoute = (typeof LOOFTA_ROUTES)[number];
+/** Per-page toggle. payTo: omitted = keep the page's current override, null = clear it (use the creator's settings). */
+export const LooftaToggle = z.object({ enabled: z.boolean(), payTo: LooftaPayTo.nullable().optional() }).strict();
+export type LooftaToggle = z.infer<typeof LooftaToggle>;
+export const TokensLooftaRequest = z.object({ tokens: z.array(Ticker).min(1).max(TOKENS_DELETE_MAX), loofta: LooftaToggle }).strict();
+export type TokensLooftaRequest = z.infer<typeof TokensLooftaRequest>;
+/** What the token page and the public launches list get: no payout target, only a masked label. */
+export interface LooftaPublic {
+  enabled: true;
+  route: LooftaRoute;
+  /** e.g. "the creator's Loofta account", "@name on X", "j•••@gmail.com". */
+  label: string;
+  /** Off mainnet the API never creates a link or returns a payout URL (Loofta has no sandbox). */
+  preview: boolean;
+}
+/** On LaunchedToken (public): on/off, whether a route exists, and whether this page has its own payout target. */
+export interface LooftaPageState {
+  enabled: boolean;
+  ready: boolean;
+  custom: boolean;
+}
+export const LOOFTA_AMOUNT_MIN = 1;
+export const LOOFTA_AMOUNT_MAX = 10_000;
+export const LooftaCheckoutRequest = z
+  .object({
+    site: z.string().min(2).max(64),
+    /** USD. */
+    amount: z.number().finite().min(LOOFTA_AMOUNT_MIN).max(LOOFTA_AMOUNT_MAX).refine((n) => Math.abs(Math.round(n * 100) - n * 100) < 1e-6, "at most 2 decimals"),
+    message: z.string().max(200).optional(),
+  })
+  .strict();
+export type LooftaCheckoutRequest = z.infer<typeof LooftaCheckoutRequest>;
+export interface LooftaKeySummary {
+  last4: string | null;
+  createdAt: number;
+  updatedAt: number;
+  valid: boolean;
+  validatedAt: number;
+  lastError: string | null;
+}
+export interface LooftaPayToSummary {
+  kind: LooftaPayTo["kind"];
+  platform?: LooftaSocial;
+  /** Masked for email; the handle/username as is. Only ever shown to the creator. */
+  display: string;
+}
+export interface LooftaSettings {
+  enabled: boolean;
+  key: LooftaKeySummary | null;
+  payTo: LooftaPayToSummary | null;
+  /** Which route a page without its own target uses: checkout (key) > send (payout target) > none. */
+  route: LooftaRoute | null;
+  network: "testnet" | "mainnet";
 }

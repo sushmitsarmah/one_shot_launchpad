@@ -34,6 +34,7 @@ import { IS_MAINNET, NET_LABEL } from "../../lib/config";
           <p id="tk-desc"></p>
         </div>
         <div id="tk-intents" class="tk-intents-host" hidden></div>
+        <div id="tk-loofta" class="tk-intents-host" hidden></div>
         <div class="tk-card tk-facts">
           <h2>Token facts</h2>
           <dl>
@@ -107,6 +108,11 @@ import { IS_MAINNET, NET_LABEL } from "../../lib/config";
             import("../../scripts/intents-widget").then(({ mountIntents }) =>
               mountIntents(host, { api: API_URL, site: s.slug ?? ticker, sym, tokenId: tl.contractOrMintAddress, intents: j.intents, network: j.network, rhea: j.rhea ?? null, buyUrl: tl.buyUrl, owner: s.ownerWallet }),
             );
+          }
+          if (j.loofta?.enabled) {
+            const host = $("tk-loofta");
+            host.hidden = false;
+            import("../../scripts/loofta-widget").then(({ mountLoofta }) => mountLoofta(host, { api: API_URL, site: s.slug ?? ticker, sym, loofta: j.loofta }));
           }
         })
         .catch((e) => fail(`Couldn't reach the API: ${e.message ?? e}`));

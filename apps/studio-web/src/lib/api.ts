@@ -20,6 +20,9 @@ import type {
   LlmProvider,
   LlmProviderInfo,
   PlatformKeyInfo,
+  LooftaPayTo,
+  LooftaSettings,
+  LooftaToggle,
 } from "@osl/schema";
 import { INTENTS_TOKENS_MAX, MAX_BATCH, TOKENS_DELETE_MAX, chunk, pool, type IntentsConfig, type TokensActionResult } from "@osl/schema";
 import { API_URL } from "./config";
@@ -203,6 +206,21 @@ export async function tokensIntents(tickers: string[], intents: IntentsConfig, t
   return out;
 }
 
+/** Turns the Loofta "pay the creator" widget on/off for many tokens (creator-only), TOKENS_DELETE_MAX per request. */
+export async function tokensLoofta(tickers: string[], loofta: LooftaToggle, token: string): Promise<TokensActionResult[]> {
+  const out: TokensActionResult[] = [];
+  for (const part of chunk(tickers, TOKENS_DELETE_MAX)) {
+    try {
+      out.push(...(await post<{ results: TokensActionResult[] }>("/api/tokens/loofta", { tokens: part, loofta }, token)).results);
+    } catch (e) {
+      const r = (e as ApiError).body?.results as TokensActionResult[] | undefined;
+      if (r?.length) out.push(...r);
+      else throw e;
+    }
+  }
+  return out;
+}
+
 export const fetchSite = (ticker: string) =>
   get<{ source: string; siteConfig: SiteConfig; siteUrl: string }>(`/api/site/${encodeURIComponent(ticker)}`);
 
@@ -261,3 +279,10 @@ export const saveLlmKey = (scope: KeyScope, body: { provider: LlmProvider; apiKe
 export const testLlmKey = (scope: KeyScope, token: string) =>
   authed<{ ok: boolean; error?: string; key?: LlmKeySummary; tested?: "platform" | "env" } & Partial<PlatformKeyInfo>>("POST", `${keyPath(scope)}/test`, token, {});
 export const deleteLlmKey = (scope: KeyScope, token: string) => authed<{ ok: true } & Partial<PlatformKeyInfo>>("DELETE", keyPath(scope), token);
+
+// ---------- Loofta (creator's own Loofta key + payout target; the API never returns either) ----------
+export const getLooftaSettings = (token: string) => authed<LooftaSettings>("GET", "/api/loofta/settings", token);
+export const saveLooftaKey = (apiKey: string, token: string) => authed<LooftaSettings & { ok: true }>("PUT", "/api/loofta/key", token, { apiKey });
+export const testLooftaKey = (token: string) => authed<LooftaSettings & { ok: boolean; error?: string }>("POST", "/api/loofta/key/test", token, {});
+export const deleteLooftaKey = (token: string) => authed<LooftaSettings & { ok: true }>("DELETE", "/api/loofta/key", token);
+export const saveLooftaPayTo = (payTo: LooftaPayTo | null, token: string) => authed<LooftaSettings & { ok: true }>("PUT", "/api/loofta/payto", token, { payTo });

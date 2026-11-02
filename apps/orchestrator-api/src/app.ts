@@ -25,6 +25,11 @@ import {
   type Listing,
   IntentsQuoteRequest,
   TokensIntentsRequest,
+  TokensLooftaRequest,
+  LooftaCheckoutRequest,
+  LooftaPayTo,
+  type LooftaPageState,
+  type LooftaSettings,
   type RheaOptions,
   JusthootFinalizeRequest,
   JusthootPrepareRequest,
@@ -87,6 +92,34 @@ import {
   referenceJson,
   sha256Base64,
 } from "./justhoot";
+import {
+  CHECKOUT_RATE_LIMIT,
+  cleanLooftaKey,
+  cleanMessage,
+  createPaymentLink,
+  deleteLooftaKey,
+  deletePayTo,
+  openLooftaKey,
+  openPayTo,
+  pageOwnerId,
+  readLooftaKey,
+  readPage as readLooftaPage,
+  readPayTo,
+  resolveRoute,
+  sealLooftaKey,
+  sealPayTo,
+  sendUrl,
+  summarizeLooftaKey,
+  summarizePayTo,
+  takeCheckoutRate,
+  toPublic as looftaPublic,
+  validateLooftaKey,
+  writeLooftaKey,
+  writePage as writeLooftaPage,
+  writePayTo,
+  type LooftaKeyRecord,
+  type PageRecord as LooftaPageRecord,
+} from "./loofta";
 import { buildSiteConfig, claimSlug, compactSite, findSite, getIntents, getSite, getTakedown, setIntents, getViews, kvStore, putSite, restoreTakedown, saveSite, siteStoreKind, siteUrl, takeDown } from "./sites";
 import {
   WAITLIST_MAX_BODY,
@@ -737,13 +770,13 @@ async function addVenueIndex(owner: string, venue: "nearly" | "justhoot", ticker
 
 // ---------- take down / restore a token's site (creator, or an admin for moderation) ----------
 /** Who may act on `ticker`: its recorded creator (factory registry, else the site's ownerWallet) or an admin. */
-async function tokenAccess(ticker: string, account: string): Promise<{ ok: true; admin: boolean } | { ok: false; status: 403 | 404; note: string }> {
+async function tokenAccess(ticker: string, account: string): Promise<{ ok: true; admin: boolean; creator?: string } | { ok: false; status: 403 | 404; note: string }> {
   const rec = await getTokenRecord(ticker).catch(() => null);
   const creator = rec?.owner_id ?? (await findSite(ticker))?.site.ownerWallet ?? null;
   const admin = isAdmin(account, config);
   if (!creator) return admin ? { ok: true, admin } : { ok: false, status: 404, note: "no such token" };
-  if (creator === account) return { ok: true, admin: false };
-  if (admin) return { ok: true, admin: true };
+  if (creator === account) return { ok: true, admin: false, creator };
+  if (admin) return { ok: true, admin: true, creator };
   return { ok: false, status: 403, note: "only the token's creator can do this" };
 }
 
@@ -1048,7 +1081,7 @@ app.get("/api/site/:id", async (c) => {
   if (td) return c.json({ error: "This token page was taken down by its creator", code: "taken_down", takenDownAt: td.at }, 410);
   if (found) {
     const kv = found.site;
-    const extra = await pageExtras(found.ticker);
+    const extra = await pageExtras(found.ticker, kv.ownerWallet ?? null);
     return c.json({ source: "kv", siteConfig: { ...kv, ...(extra.intents ? { intents: extra.intents } : {}) }, siteUrl: siteUrl(kv.slug ?? id), views: await getViews(found.ticker), ...extra });
   }
   const ticker = id;
@@ -1071,16 +1104,17 @@ app.get("/api/site/:id", async (c) => {
       launchedAt: Number(rec.created_at_ms),
     },
   });
-  const extra = await pageExtras(ticker);
+  const extra = await pageExtras(ticker, rec.owner_id);
   return c.json({ source: "chain", siteConfig: { ...siteConfig, ...(extra.intents ? { intents: extra.intents } : {}) }, siteUrl: siteUrl(ticker), ...extra });
 });
 
 /** For the token page: NEAR Intents settings (null = off), the network, and the Rhea DCL pool to swap in (buy mode). */
-async function pageExtras(ticker: string) {
+async function pageExtras(ticker: string, owner: string | null = null) {
   const intents = await getIntents(ticker).catch(() => null);
   const l = intents?.enabled ? await getListing(ticker).catch(() => null) : null;
   return {
     intents: intents?.enabled ? intents : null,
+    loofta: await looftaForPage(ticker, owner),
     network: config.networkId,
     rhea: l?.ok && l.venue === "rhea" && l.poolId ? { dcl: config.dclContract, wnear: config.wnearContract, poolId: l.poolId, url: l.url } : null,
   };
@@ -1142,6 +1176,169 @@ app.get("/api/intents/status", async (c) => {
   return c.json(r);
 });
 
+// ---------- Loofta: pay the creator (README "Loofta") ----------
+// The creator's Loofta key and payout targets are encrypted like AI keys and never leave the server. Pages and
+// the public launches list only get on/off, the route and a masked label; payout URLs come from POST checkout.
+
+/** Public page view: null when off or when the creator has no usable route (no key and no payout target). */
+async function looftaForPage(ticker: string, owner: string | null) {
+  const page = await readLooftaPage(kvStore(), ticker).catch(() => null);
+  if (!page?.enabled) return null;
+  const r = await resolveRoute(kvStore(), ticker, owner, page).catch(() => null);
+  return r ? looftaPublic(r) : null;
+}
+
+/** For "My tokens" (public list): no decrypting, no targets. Absent when the page has no Loofta record. */
+async function looftaState(ticker: string, owner: string): Promise<LooftaPageState | null> {
+  const page = await readLooftaPage(kvStore(), ticker);
+  if (!page) return null;
+  return { enabled: page.enabled, custom: !!page.payTo, ready: !!page.payTo || (await ownerHasLoofta(owner)) };
+}
+async function ownerHasLoofta(owner: string): Promise<boolean> {
+  const kv = kvStore();
+  const [k, p] = await Promise.all([readLooftaKey(kv, owner), readPayTo(kv, owner)]);
+  return !!k?.valid || !!p;
+}
+
+const requireLooftaStorage = () => {
+  if (!keyStorageConfigured()) throw new KeyError("saving Loofta settings isn't enabled on this server yet (KEY_ENCRYPTION_KEY)", 503, "key_storage_unconfigured");
+};
+async function looftaSettings(account: string): Promise<LooftaSettings> {
+  const kv = kvStore();
+  const [k, p] = await Promise.all([readLooftaKey(kv, account), readPayTo(kv, account)]);
+  const key = k ? await summarizeLooftaKey(account, k) : null;
+  const pt = p ? await openPayTo(account, p) : null;
+  return {
+    enabled: keyStorageConfigured(),
+    key,
+    payTo: pt ? summarizePayTo(pt) : null,
+    route: key?.valid ? "checkout" : pt ? "send" : null,
+    network: config.networkId,
+  };
+}
+
+app.get("/api/loofta/settings", requireSession, requireAllowed, async (c) => c.json(await looftaSettings(c.var.account)));
+
+/** Validate with Loofta (harmless lookup) and store encrypted. Nothing is stored if Loofta rejects the key. */
+app.put("/api/loofta/key", requireSession, requireAllowed, async (c) => {
+  requireLooftaStorage();
+  const text = await c.req.text().catch(() => "");
+  if (text.length > 2048) throw new KeyError("request too large", 400);
+  let raw: unknown = null;
+  try {
+    raw = (JSON.parse(text) as { apiKey?: unknown })?.apiKey;
+  } catch {}
+  const apiKey = cleanLooftaKey(raw);
+  const account = c.var.account;
+  if (!(await takeKeyRate(kvStore(), account, "loofta", KEY_RATE_LIMIT))) throw new KeyError(`too many Loofta key saves/tests; limit is ${KEY_RATE_LIMIT} per hour`, 429, "rate_limited");
+  const v = await validateLooftaKey(apiKey);
+  if (!v.ok) throw new KeyError(`${v.error} The key was not saved.`, v.status === 429 ? 429 : 400, "key_invalid");
+  const kv = kvStore();
+  const existing = await readLooftaKey(kv, account);
+  const now = Date.now();
+  const rec: LooftaKeyRecord = { v: 1, ...(await sealLooftaKey(account, apiKey)), createdAt: existing?.createdAt ?? now, updatedAt: now, valid: true, validatedAt: now, lastError: null };
+  await writeLooftaKey(kv, account, rec);
+  return c.json({ ok: true, ...(await looftaSettings(account)) });
+});
+app.post("/api/loofta/key/test", requireSession, requireAllowed, async (c) => {
+  requireLooftaStorage();
+  const account = c.var.account;
+  const kv = kvStore();
+  const rec = await readLooftaKey(kv, account);
+  if (!rec) throw new KeyError("no saved Loofta key", 404, "no_key");
+  if (!(await takeKeyRate(kv, account, "loofta", KEY_RATE_LIMIT))) throw new KeyError(`too many Loofta key saves/tests; limit is ${KEY_RATE_LIMIT} per hour`, 429, "rate_limited");
+  const v = await validateLooftaKey(await openLooftaKey(account, rec));
+  // A Loofta outage shouldn't switch pages off: only an explicit rejection marks the key invalid.
+  const rejected = !v.ok && v.status === 400;
+  await writeLooftaKey(kv, account, { ...rec, valid: v.ok || (rec.valid && !rejected), validatedAt: Date.now(), lastError: v.ok ? null : v.error });
+  return c.json({ ok: v.ok, ...(v.ok ? {} : { error: v.error }), ...(await looftaSettings(account)) });
+});
+app.delete("/api/loofta/key", requireSession, requireAllowed, async (c) => {
+  await deleteLooftaKey(kvStore(), c.var.account);
+  return c.json({ ok: true, ...(await looftaSettings(c.var.account)) });
+});
+
+/** The creator's default payout target for the keyless route (body {payTo: null} clears it). */
+app.put("/api/loofta/payto", requireSession, requireAllowed, async (c) => {
+  const j = (await c.req.json().catch(() => null)) as { payTo?: unknown } | null;
+  if (!j || !("payTo" in j)) return c.json({ error: "payTo is required (null clears it)" }, 400);
+  const account = c.var.account;
+  if (j.payTo === null) {
+    await deletePayTo(kvStore(), account);
+    return c.json({ ok: true, ...(await looftaSettings(account)) });
+  }
+  requireLooftaStorage();
+  const p = LooftaPayTo.safeParse(j.payTo);
+  if (!p.success) return c.json({ error: p.error.issues[0]?.message ?? "invalid payout target" }, 400);
+  await writePayTo(kvStore(), account, await sealPayTo(account, p.data));
+  return c.json({ ok: true, ...(await looftaSettings(account)) });
+});
+
+/** Loofta widget on/off for many token pages (creator or admin), optionally with a per-page payout target. */
+app.post("/api/tokens/loofta", requireSession, requireAllowed, async (c) => {
+  const body = TokensLooftaRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
+  const { tokens, loofta } = body.data;
+  if (loofta.payTo || loofta.enabled) requireLooftaStorage();
+  const kv = kvStore();
+  const results: TokensActionResult[] = [];
+  let forbidden = 0;
+  for (const ticker of [...new Set(tokens)]) {
+    const a = await tokenAccess(ticker, c.var.account);
+    if (!a.ok) {
+      if (a.status === 403) forbidden++;
+      results.push({ ticker, ok: false, note: a.note });
+      continue;
+    }
+    const page = await readLooftaPage(kv, ticker);
+    const next: LooftaPageRecord = { enabled: loofta.enabled, ...(page?.payTo ? { payTo: page.payTo } : {}) };
+    if (loofta.payTo === null) delete next.payTo;
+    else if (loofta.payTo) next.payTo = await sealPayTo(pageOwnerId(ticker), loofta.payTo);
+    if (next.enabled && !(await resolveRoute(kv, ticker, a.creator ?? null, next))) {
+      results.push({ ticker, ok: false, note: "set up Loofta first: save your Loofta API key or a payout target (Studio → Loofta)" });
+      continue;
+    }
+    await writeLooftaPage(kv, ticker, next);
+    results.push({ ticker, ok: true });
+  }
+  const status = results.some((r) => r.ok) ? 200 : forbidden ? 403 : results.length && results.every((r) => /set up Loofta/.test(r.note ?? "")) ? 409 : 404;
+  return c.json({ results, ...(status !== 200 ? { error: results[0]?.note ?? "nothing changed" } : {}) }, status);
+});
+
+/**
+ * A visitor clicked "Pay with Loofta". Public, rate-limited per IP. Mainnet: a fresh Loofta checkout (owner's key)
+ * or the Send link with the payout target. Elsewhere: a preview only; Loofta has no sandbox, so no link at all.
+ */
+app.post("/api/loofta/checkout", async (c) => {
+  const body = LooftaCheckoutRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
+  const id = body.data.site.toLowerCase();
+  if (!SITE_ID_RE.test(id)) return c.json({ error: "invalid ticker or slug" }, 400);
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  if (!(await takeCheckoutRate(kvStore(), ip))) return c.json({ error: `too many payment requests from here (limit ${CHECKOUT_RATE_LIMIT} per 10 minutes); try again later` }, 429);
+  const found = await findSite(id);
+  const ticker = found?.ticker ?? id;
+  if (await getTakedown(ticker)) return c.json({ error: "This token page was taken down", code: "taken_down" }, 410);
+  const owner = found?.site.ownerWallet ?? (await getTokenRecord(ticker).catch(() => null))?.owner_id ?? null;
+  if (!owner) return c.json({ error: "no such token" }, 404);
+  const page = await readLooftaPage(kvStore(), ticker);
+  if (!page?.enabled) return c.json({ error: "Loofta payments aren't enabled on this page" }, 403);
+  const mainnet = config.networkId === "mainnet";
+  const r = await resolveRoute(kvStore(), ticker, owner, page, mainnet);
+  if (!r) return c.json({ error: "the creator hasn't finished setting up Loofta payments" }, 409);
+  const amount = Math.round(body.data.amount * 100) / 100;
+  const base = { route: r.route, label: r.label, amount };
+  if (!mainnet) {
+    return c.json({ ...base, preview: true, url: null, note: `Preview: on mainnet this opens Loofta ${r.route === "checkout" ? "checkout" : "Send"} for $${amount} to ${r.label}. Loofta has no test mode, so nothing opens here.` });
+  }
+  const name = found?.site.branding.ticker ?? ticker.toUpperCase();
+  if (r.route === "checkout") {
+    const url = await createPaymentLink(r.apiKey!, amount, cleanMessage(body.data.message, `Tip for $${name}`), siteUrl(found?.site.slug ?? ticker));
+    return c.json({ ...base, preview: false, url });
+  }
+  return c.json({ ...base, preview: false, url: sendUrl(r.payTo!, amount) });
+});
+
 /** Creator settings for a token site. Owner-only: the session account must be the site's ownerWallet. */
 app.put("/api/site/:id/settings", requireSession, requireAllowed, async (c) => {
   const id = c.req.param("id").toLowerCase();
@@ -1164,8 +1361,8 @@ const getListing = async (ticker: string): Promise<Listing | null> => {
 };
 
 const withTakedown = async (l: LaunchedToken): Promise<LaunchedToken> => {
-  const [td, intents] = await Promise.all([getTakedown(l.ticker), getIntents(l.ticker).catch(() => null)]);
-  const withIntents = intents ? { ...l, intents } : l;
+  const [td, intents, loofta] = await Promise.all([getTakedown(l.ticker), getIntents(l.ticker).catch(() => null), looftaState(l.ticker, l.ownerId).catch(() => null)]);
+  const withIntents = { ...l, ...(intents ? { intents } : {}), ...(loofta ? { loofta } : {}) };
   return td ? { ...withIntents, deletedAt: td.at, ...(td.byAdmin ? { deletedByAdmin: true } : {}) } : withIntents;
 };
 

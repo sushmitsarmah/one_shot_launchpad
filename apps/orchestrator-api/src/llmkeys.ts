@@ -178,24 +178,30 @@ export async function readRecord(kv: KVLike, account: string): Promise<KeyRecord
   }
 }
 
-export async function sealKey(account: string, provider: ProviderId, apiKey: string): Promise<{ kv: number; iv: string; ct: string }> {
+/** Encrypts any secret under the current master key with the given AAD (shared by AI keys and Loofta). */
+export async function sealSecret(plaintext: string, aad: Uint8Array<ArrayBuffer>): Promise<{ kv: number; iv: string; ct: string }> {
   const { current, keys } = masterKeys();
   const b = keys.get(current);
   if (!b) throw new KeyError("key storage isn't configured on this server (KEY_ENCRYPTION_KEY)", 503, "key_storage_unconfigured");
-  return { kv: current, ...(await encryptSecret(await importMasterKey(b), apiKey, aadFor(account, provider))) };
+  return { kv: current, ...(await encryptSecret(await importMasterKey(b), plaintext, aad)) };
 }
 
-/** Decrypts a record's key (server-side use only). */
-export async function openKey(account: string, r: KeyRecord): Promise<string> {
-  const b = masterKeys().keys.get(r.kv);
+/** Decrypts a sealed secret (server-side use only). */
+export async function openSecret(box: { kv: number; iv: string; ct: string }, aad: Uint8Array<ArrayBuffer>): Promise<string> {
+  const b = masterKeys().keys.get(box.kv);
   if (!b) throw new KeyError("the stored key was encrypted with a master key this server doesn't have; replace the key", 503, "key_undecryptable");
   try {
-    return await decryptSecret(await importMasterKey(b), r, aadFor(account, r.provider));
+    return await decryptSecret(await importMasterKey(b), box, aad);
   } catch (e) {
     if (e instanceof KeyError) throw e;
     throw new KeyError("the stored key couldn't be decrypted; replace the key", 503, "key_undecryptable");
   }
 }
+
+export const sealKey = (account: string, provider: ProviderId, apiKey: string) => sealSecret(apiKey, aadFor(account, provider));
+
+/** Decrypts a record's key (server-side use only). */
+export const openKey = (account: string, r: KeyRecord): Promise<string> => openSecret(r, aadFor(account, r.provider));
 
 export async function summarize(account: string, r: KeyRecord): Promise<KeySummary> {
   const k = await openKey(account, r).catch(() => null);
@@ -221,7 +227,7 @@ export async function deleteRecord(kv: KVLike, account: string) {
 }
 
 /** Per-account fixed-window limiter (KV counter, ~1 h). */
-export async function takeKeyRate(kv: KVLike, account: string, bucket: "save" | "models", limit: number, now = Date.now()): Promise<boolean> {
+export async function takeKeyRate(kv: KVLike, account: string, bucket: "save" | "models" | "loofta", limit: number, now = Date.now()): Promise<boolean> {
   const w = Math.floor(now / 3_600_000);
   const k = `llmrl:${bucket}:${account}:${w}`;
   const n = Number((await kv.get(k)) ?? 0) || 0;
