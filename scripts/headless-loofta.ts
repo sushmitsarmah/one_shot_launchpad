@@ -9,7 +9,8 @@ const port = 9335;
 const chrome = spawn("google-chrome", ["--headless=new", "--no-sandbox", "--disable-gpu", `--remote-debugging-port=${port}`, "--window-size=1280,1600", "about:blank"], { stdio: "ignore" });
 await new Promise((r) => setTimeout(r, 2500));
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
-const ws = new WebSocket(targets.find((t: any) => t.type === "page").webSocketDebuggerUrl);
+const page0 = targets.find((t: any) => t.type === "page");
+const ws = new WebSocket(page0.webSocketDebuggerUrl);
 await new Promise((r) => (ws.onopen = r));
 let id = 0;
 const pending = new Map<number, (v: any) => void>();
@@ -17,7 +18,7 @@ const opened: string[] = [];
 ws.onmessage = (m) => {
   const j = JSON.parse(String(m.data));
   if (j.id && pending.has(j.id)) pending.get(j.id)!(j.result ?? j.error), pending.delete(j.id);
-  if (j.method === "Target.targetCreated" && j.params.targetInfo.type === "page") opened.push(j.params.targetInfo.url);
+  if (j.method === "Target.targetCreated" && j.params.targetInfo.type === "page" && j.params.targetInfo.targetId !== page0.id) opened.push(j.params.targetInfo.url);
 };
 const cdp = (method: string, params: any = {}) => new Promise<any>((r) => { pending.set(++id, r); ws.send(JSON.stringify({ id, method, params })); });
 const evalJs = async (expr: string) => (await cdp("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true })).result?.value;
@@ -45,7 +46,7 @@ await setVal(".tk-loofta input[aria-label='amount in USD']", "5");
 await evalJs(`document.querySelector('.tk-loofta .tkl-pay').click(); true`);
 await waitFor(`/Preview|opened|Couldn't/.test(document.querySelector('.tk-loofta .tki-msg').textContent)`, 15000);
 out.clickMsg = await evalJs(`document.querySelector('.tk-loofta .tki-msg').textContent`);
-out.tabsOpened = opened.length;
+out.newTabsOpened = opened; // the page itself is excluded
 await shot("loofta-desktop");
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await sleep(800);
