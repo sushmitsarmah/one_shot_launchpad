@@ -4,8 +4,8 @@
  * Rhea with your wallet (1Click can't route into brand-new tokens). Tip: pay any asset -> creator gets USDC/wNEAR.
  * Quotes/status go through our API (proxy of 1Click). Deposit addresses are only ever taken from that answer.
  * 1Click only runs on NEAR mainnet, so quotes and deposits are always real mainnet ones, on every Yeetpad
- * deployment. Buy is only offered on mainnet deployments (a testnet token's Rhea pool isn't on mainnet), and tips
- * only when the creator has a mainnet recipient; the API sends the effective settings.
+ * deployment. Tips are only offered when the creator has a mainnet recipient (the API sends the effective
+ * settings); buy is offered as configured, and fails with the normal error where the token/pool doesn't exist.
  */
 import qrcode from "qrcode-generator";
 import { viewCall } from "../lib/near";
@@ -34,9 +34,7 @@ const h = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLEle
 };
 
 export function mountIntents(host: HTMLElement, ctx: IntentsCtx) {
-  // buy needs the token on mainnet; the API already drops it on testnet deployments, this is belt and braces
-  const modes = (ctx.intents.mode === "both" ? (["buy", "tip"] as const) : ([ctx.intents.mode] as const)).filter((m) => m !== "buy" || ctx.network === "mainnet");
-  if (!modes.length) return;
+  const modes: ("buy" | "tip")[] = ctx.intents.mode === "both" ? ["buy", "tip"] : [ctx.intents.mode];
   let mode = modes[0];
   let tokens: ReturnType<typeof payOptions> = [];
   let polling: number | null = null;

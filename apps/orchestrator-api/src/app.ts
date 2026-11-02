@@ -1120,8 +1120,8 @@ async function readIntentsPayout(account: string | null): Promise<string | null>
 }
 const mainnetDeployment = () => config.networkId === "mainnet";
 /**
- * For the token page: NEAR Intents as offered (null = off or nothing available: tips need a mainnet recipient,
- * buy needs a mainnet token), the network, and the Rhea DCL pool to swap in (buy mode).
+ * For the token page: NEAR Intents as offered (null = off or nothing available; tips need a mainnet recipient),
+ * the network, and the Rhea DCL pool to swap in (buy mode).
  */
 async function pageExtras(ticker: string, owner: string | null = null) {
   const cfg = await getIntents(ticker).catch(() => null);
@@ -1152,7 +1152,6 @@ app.get("/api/intents/tokens", async (c) => {
 /**
  * Quote for a token page's widget, always on NEAR mainnet (every deployment). The server picks the destination
  * (tips: the creator's mainnet recipient; buy: wNEAR to the visitor's account) and never adds app fees.
- * Buy is refused on testnet deployments (the token and its pool aren't on mainnet).
  */
 app.post("/api/intents/quote", async (c) => {
   const body = IntentsQuoteRequest.safeParse(await c.req.json().catch(() => null));
@@ -1172,7 +1171,7 @@ app.post("/api/intents/quote", async (c) => {
   }
   if (!tokens.some((t) => t.assetId === body.data.originAsset)) return c.json({ error: "that asset isn't supported by NEAR Intents" }, 400);
   const cfg = await getIntents(ticker);
-  const plan = planQuote(body.data, cfg, tipRecipient(cfg, owner, await readIntentsPayout(owner), mainnetDeployment()), mainnetDeployment());
+  const plan = planQuote(body.data, cfg, tipRecipient(cfg, owner, await readIntentsPayout(owner), mainnetDeployment()));
   if (!plan.ok) return c.json({ error: plan.error }, plan.status);
   const r = await oneClickQuote(oneClick(), plan.body).catch((e) => ({ ok: false, status: 502, j: { message: (e as Error).message } }));
   if (!r.ok) return c.json({ error: `NEAR Intents: ${r.j?.message ?? `HTTP ${r.status}`}` }, r.status >= 500 ? 502 : 400);
@@ -1185,7 +1184,7 @@ app.post("/api/intents/quote", async (c) => {
 
 async function intentsSettings(account: string): Promise<IntentsSettings> {
   const payout = await readIntentsPayout(account);
-  return { payout, tipRecipient: tipRecipient(null, account, payout, mainnetDeployment()), buy: mainnetDeployment(), network: config.networkId };
+  return { payout, tipRecipient: tipRecipient(null, account, payout, mainnetDeployment()), network: config.networkId };
 }
 app.get("/api/intents/settings", requireSession, requireAllowed, async (c) => c.json(await intentsSettings(c.var.account)));
 /** The creator's default NEAR mainnet account for tips on all their pages ({account: null} clears it). */

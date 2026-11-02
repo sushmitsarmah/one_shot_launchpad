@@ -1211,7 +1211,7 @@ export default function Studio() {
           <div className="row">
             <button className="ghost" onClick={() => setPicked(ideas.map(() => true))}>Select all</button>
             <button className="ghost" onClick={() => setPicked(ideas.map(() => false))}>None</button>
-            <label className="pick small intents-all" title="Adds a NEAR Intents widget to each token page: visitors tip (and, on mainnet, buy) with BTC, ETH, SOL, USDC… Always real NEAR mainnet payments; tips need a mainnet payout account (see NEAR Intents tips). Change it per token later in My tokens.">
+            <label className="pick small intents-all" title="Adds a NEAR Intents widget to each token page: visitors buy or tip with BTC, ETH, SOL, USDC… Always real NEAR mainnet payments; tips need a mainnet payout account (see NEAR Intents tips). Change it per token later in My tokens.">
               <input
                 type="checkbox"
                 checked={ideas.length > 0 && ideas.every((_, i) => intentsOn[i])}
@@ -1600,7 +1600,7 @@ function IdeaCard({
       </p>
       <p>{idea.description}</p>
       {onIntents && (
-        <label className="pick small idea-intents" title="NEAR Intents widget on this token's page: tip (and, on mainnet, buy) with any crypto; real NEAR mainnet payments">
+        <label className="pick small idea-intents" title="NEAR Intents widget on this token's page: buy or tip with any crypto; real NEAR mainnet payments">
           <input type="checkbox" checked={!!intents} onChange={(e) => onIntents(e.target.checked)} /> NEAR Intents on its page
         </label>
       )}

@@ -1,7 +1,7 @@
 // Live check of NEAR Intents on token pages (no funds move). 1Click is always mainnet. Optionally sets the e2e
 // creator's mainnet tip payout account (PAYOUT=name.near; PAYOUT=- clears), bulk-enables Intents for TICKERS,
 // reads the page config, gets live 1Click quotes through our API proxy (price-only dry quotes unless REAL=1, which
-// asks for a binding quote with a deposit address; never deposit), checks that buy is refused for testnet tokens
+// asks for a binding quote with a deposit address; never deposit), a dry buy quote
 // and the status proxy, then (if DISABLE=1) turns it off. Usage: TICKERS=a,b [PAYOUT=x.near] [REAL=1] [DISABLE=1] bun e2e-intents.ts
 import { KeyPair, KeyPairSigner, type KeyPairString } from "near-api-js";
 import { readFileSync } from "node:fs";

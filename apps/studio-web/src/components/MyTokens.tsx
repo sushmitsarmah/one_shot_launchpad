@@ -316,7 +316,7 @@ export default function MyTokens({
                 <th>Tx</th>
                 <th>Venue</th>
                 <th>Views</th>
-                <th title="NEAR Intents widget on the token page: visitors tip (and, for mainnet tokens, buy) with any crypto. Always real NEAR mainnet payments.">Intents</th>
+                <th title="NEAR Intents widget on the token page: visitors buy or tip with any crypto. Always real NEAR mainnet payments.">Intents</th>
                 <th title="Loofta 'pay the creator' button on the token page (needs your Loofta key or a payout target)">Loofta</th>
                 <th className="c-actions">Actions</th>
               </tr>

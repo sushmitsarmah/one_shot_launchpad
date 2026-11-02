@@ -4,12 +4,12 @@
  * destination (tips always go to the creator's mainnet recipient), never add app fees, and attach the optional
  * partner JWT from a Worker secret.
  *
- * 1Click only runs on NEAR mainnet, and so does this widget on every Yeetpad deployment (testnet included):
- * quotes and deposits are real. Consequences per mode:
+ * 1Click only runs on NEAR mainnet, and so does this widget, the same on every Yeetpad deployment (testnet
+ * included): quotes and deposits are real.
  *  - tip: needs a NEAR mainnet recipient (page recipient > creator's payout account > creator on mainnet
- *    deployments). A testnet creator has no mainnet account, so without a payout account tips are hidden.
- *  - buy: delivers mainnet wNEAR for a swap in the token's Rhea pool. A testnet token's pool is on testnet, so
- *    mainnet wNEAR can't buy it: buy is only offered on mainnet deployments.
+ *    deployments); never a .testnet name. Without one, tips are hidden.
+ *  - buy: delivers mainnet wNEAR to the visitor, then a swap in the token's Rhea pool. No special gating: if the
+ *    token or pool doesn't exist where the swap runs, that step fails with the normal error.
  */
 import { isNearMainnetAccount, type IntentsConfig, type IntentsQuoteRequest } from "@osl/schema";
 
@@ -61,17 +61,15 @@ export function tipRecipient(cfg: IntentsConfig | null, owner: string | null, pa
   for (const a of [cfg?.recipient, payout, mainnet ? owner : null]) if (a && isNearMainnetAccount(a)) return a;
   return null;
 }
-export const BUY_TESTNET_NOTE = "Buy is hidden: NEAR Intents settles on mainnet, and this testnet token's Rhea pool is on testnet, so mainnet funds can't buy it.";
 export const TIP_NO_RECIPIENT_NOTE = "Tips are hidden: set a NEAR mainnet payout account (name.near) in Studio → NEAR Intents tips, or a recipient for this page.";
 /** What a page's widget actually offers. */
 export function intentsPageState(cfg: IntentsConfig | null, owner: string | null, payout: string | null, mainnet: boolean) {
   const mode = cfg?.mode ?? "both";
   const recipient = tipRecipient(cfg, owner, payout, mainnet);
   const tip = mode !== "buy" && !!recipient;
-  const buy = mode !== "tip" && mainnet;
+  const buy = mode !== "tip";
   const notes: string[] = [];
   if (mode !== "buy" && !recipient) notes.push(TIP_NO_RECIPIENT_NOTE);
-  if (mode !== "tip" && !mainnet) notes.push(BUY_TESTNET_NOTE);
   return { tip, buy, recipient: tip ? recipient : null, notes };
 }
 /** The token page's view: effective mode (unavailable modes dropped) or null when nothing is left. */
@@ -90,13 +88,12 @@ export type QuotePlan =
 /**
  * Builds the 1Click /v0/quote body for a token page. Never includes appFees (Yeetpad takes no fee). Always mainnet.
  * - tip: destination = `recipient` (resolved by tipRecipient) as USDC/wNEAR on NEAR.
- * - buy: destination = the visitor's NEAR account as wNEAR (then a Rhea swap on the page); mainnet tokens only.
+ * - buy: destination = the visitor's NEAR account as wNEAR (then a Rhea swap on the page).
  */
-export function planQuote(req: IntentsQuoteRequest, cfg: IntentsConfig | null, tipTo: string | null, mainnetToken: boolean, now = Date.now()): QuotePlan {
+export function planQuote(req: IntentsQuoteRequest, cfg: IntentsConfig | null, tipTo: string | null, now = Date.now()): QuotePlan {
   if (!cfg?.enabled) return { ok: false, status: 403, error: "NEAR Intents isn't enabled for this token" };
   const mode = cfg.mode ?? "both";
   if (mode !== "both" && mode !== req.mode) return { ok: false, status: 403, error: `this token page only offers ${mode}` };
-  if (req.mode === "buy" && !mainnetToken) return { ok: false, status: 403, error: "buying with NEAR Intents needs a mainnet token: this token lives on NEAR testnet, so mainnet funds can't buy it" };
   const dry = !!req.dry;
   const destinationAsset = req.mode === "buy" ? WNEAR_ASSET : cfg.tipAsset === "wnear" ? WNEAR_ASSET : USDC_NEAR_ASSET;
   let recipient: string;

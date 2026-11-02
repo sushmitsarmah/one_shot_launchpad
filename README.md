@@ -241,9 +241,9 @@ Two optional, independent widgets on `/t/<slug>` (a page can have either, both o
 
 ### NEAR Intents widget
 
-* **Always NEAR mainnet, on every Yeetpad deployment** (1Click has no testnet): quotes, deposit addresses and swaps are real. Nothing about it depends on the network the Yeetpad deployment or the token runs on, except what can be offered:
+* **Always NEAR mainnet, on every Yeetpad deployment** (1Click has no testnet): quotes, deposit addresses and swaps are real. The only network-dependent rule is the tip recipient:
   * **Tip** the creator in USDC/wNEAR, delivered to a **mainnet** account: the page's own recipient (My tokens → "set tip account") > the creator's payout account (Studio → **NEAR Intents tips**, KV `intentspay:<account>`, `GET /api/intents/settings`, `PUT /api/intents/payout {account | null}`) > on mainnet deployments the creator's own account. Every recipient is validated (`name.near` or another mainnet top-level, 64-hex or `0x` implicit; never `.testnet`, which doesn't exist on mainnet). With no mainnet recipient, tips are hidden and Studio / My tokens say why.
-  * **Buy** (any asset → wNEAR via 1Click → swap to the token on Rhea with the visitor's wallet) is offered **only on mainnet deployments**: on testnet the token and its Rhea pool live on testnet, so mainnet wNEAR can't buy it. It's hidden there (`403` from the quote API) and My tokens / Studio explain it.
+  * **Buy** (any asset → mainnet wNEAR via 1Click → swap to the token on Rhea with the visitor's wallet) is offered as configured on every deployment, with no special gating: if the token or its pool doesn't exist where the swap runs (a testnet token on mainnet), that step simply fails with the normal error.
 * KV `intents:<ticker>`; `POST /api/tokens/intents` (creator or admin, ≤50 tickers); `GET /api/site/:id` → `intents` (the effective settings: mode reduced to what can be offered, plus the tip `recipient`; `null` if nothing can be); launches carry `intentsState {tip, buy, recipient, notes}`.
 * Quotes go through `POST /api/intents/quote` (the server picks the destination, never adds app fees): `dry: true` gives a price-only quote, otherwise a binding quote with a deposit address. Status: `GET /api/intents/status`.
 * Checks: `src/intents.test.ts`, `TICKERS=… [PAYOUT=x.near] bun scripts/e2e-intents.ts`, `SLUG=… bun scripts/headless-token.ts`.

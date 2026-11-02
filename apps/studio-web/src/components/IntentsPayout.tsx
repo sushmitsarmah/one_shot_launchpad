@@ -75,7 +75,6 @@ export default function IntentsPayout({
         <div>
           <h2>NEAR Intents tips</h2>
           <p className="small aikey-status">{status}</p>
-          {s && !s.buy && <p className="muted small">Buy with NEAR Intents is hidden on this testnet deployment: it settles on mainnet, and testnet tokens can't be bought with mainnet funds.</p>}
         </div>
         <button className="ghost" onClick={() => setOpen(!open)} aria-expanded={open}>
           {open ? "Hide" : s?.payout ? "Manage" : "Set payout account"}

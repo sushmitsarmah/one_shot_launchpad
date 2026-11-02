@@ -223,7 +223,7 @@ describe("batch + sites (mock mode)", () => {
     expect((await post("/api/tokens/delete", { tokens: ["nosuchtk"] }, owner)).status).toBe(404);
   });
 
-  test("NEAR Intents: bulk toggle is creator-only/admin; page config; always mainnet 1Click; testnet deployment: tips need a mainnet recipient, buy hidden", async () => {
+  test("NEAR Intents: bulk toggle is creator-only/admin; page config; always mainnet 1Click; tips need a mainnet recipient, buy as configured", async () => {
     const owner = await session("iris.testnet");
     const other = await session("mo.testnet");
     const boss = await session("boss.testnet");
@@ -244,15 +244,15 @@ describe("batch + sites (mock mode)", () => {
     const mixed = await post("/api/tokens/intents", { tokens: ["intone", "inttwo", "nosuchtk"], intents: on }, owner);
     expect(mixed.status).toBe(200);
     expect((await mixed.json()).results.map((x: { ok: boolean }) => x.ok)).toEqual([true, true, false]);
-    // testnet deployment, creator is a .testnet account, no mainnet recipient: nothing to offer on the page
+    // testnet deployment, creator is a .testnet account, no mainnet recipient: buy only (tips hidden)
     const s1 = await (await app.request(`/api/site/${slug}`)).json();
-    expect(s1.intents).toBeNull();
+    expect(s1.intents).toEqual({ enabled: true, mode: "buy", tipAsset: "usdc" });
     type L = { ticker: string; intents?: { enabled: boolean }; intentsState?: { tip: boolean; buy: boolean; recipient: string | null; notes: string[] } };
     const mine = async () => (await (await app.request("/api/launches/iris.testnet")).json()).launches as L[];
     const st0 = (await mine()).find((l) => l.ticker === "intone");
     expect(st0?.intents?.enabled).toBe(true);
-    expect(st0?.intentsState).toMatchObject({ tip: false, buy: false, recipient: null });
-    expect(st0?.intentsState?.notes.length).toBe(2);
+    expect(st0?.intentsState).toMatchObject({ tip: false, buy: true, recipient: null });
+    expect(st0?.intentsState?.notes.length).toBe(1);
     // a .testnet name is never accepted as a tip recipient
     expect((await post("/api/tokens/intents", { tokens: ["intone"], intents: { ...on, recipient: "iris.testnet" } }, owner)).status).toBe(400);
     // the creator's default mainnet payout account
@@ -262,12 +262,12 @@ describe("batch + sites (mock mode)", () => {
     expect((await put({ account: "iris.near", extra: 1 }, owner)).status).toBe(400);
     const saved = await put({ account: " Iris.near " }, owner);
     expect(saved.status).toBe(200);
-    expect(await saved.json()).toMatchObject({ payout: "iris.near", tipRecipient: "iris.near", buy: false, network: "testnet" });
-    expect(await (await app.request("/api/intents/settings", { headers: { authorization: `Bearer ${owner}` } })).json()).toMatchObject({ payout: "iris.near", buy: false });
+    expect(await saved.json()).toMatchObject({ payout: "iris.near", tipRecipient: "iris.near", network: "testnet" });
+    expect(await (await app.request("/api/intents/settings", { headers: { authorization: `Bearer ${owner}` } })).json()).toMatchObject({ payout: "iris.near" });
     const s2 = await (await app.request(`/api/site/${slug}`)).json();
-    expect(s2.intents).toEqual({ enabled: true, mode: "tip", tipAsset: "usdc", recipient: "iris.near" });
-    expect(s2.siteConfig.intents.mode).toBe("tip");
-    expect((await mine()).find((l) => l.ticker === "intone")?.intentsState).toMatchObject({ tip: true, buy: false, recipient: "iris.near" });
+    expect(s2.intents).toEqual({ enabled: true, mode: "both", tipAsset: "usdc", recipient: "iris.near" });
+    expect(s2.siteConfig.intents.mode).toBe("both");
+    expect((await mine()).find((l) => l.ticker === "intone")?.intentsState).toMatchObject({ tip: true, buy: true, recipient: "iris.near", notes: [] });
     // admin may change it; disable again
     expect((await post("/api/tokens/intents", { tokens: ["inttwo"], intents: { enabled: false, mode: "both" } }, boss)).status).toBe(200);
     expect((await (await app.request("/api/site/inttwo")).json()).intents).toBeNull();
@@ -302,12 +302,15 @@ describe("batch + sites (mock mode)", () => {
       const dryTip = await (await q({ mode: "tip", dry: true })).json();
       expect(dryTip.depositAddress).toBeNull();
       expect(sent.at(-1).dry).toBe(true);
-      // buy is not offered for a testnet token
-      expect((await q({ mode: "buy", recipient: "someone.near", refundTo: "x12" })).status).toBe(403);
+      // buy: same mainnet quote on a testnet deployment (no special gating), wNEAR to the visitor
+      const buy = await (await q({ mode: "buy", dry: true })).json();
+      expect(buy.destinationAsset).toBe("nep141:wrap.near");
+      expect(sent.at(-1).recipient).toBe("intents.near");
+      expect((await q({ mode: "buy", recipient: "someone.testnet", refundTo: "x12" })).status).toBe(400);
       // clearing the payout hides tips again
       expect((await put({ account: null }, owner)).status).toBe(200);
       expect((await q({ mode: "tip", dry: true })).status).toBe(409);
-      expect((await (await app.request(`/api/site/${slug}`)).json()).intents).toBeNull();
+      expect((await (await app.request(`/api/site/${slug}`)).json()).intents).toEqual({ enabled: true, mode: "buy", tipAsset: "usdc" });
       // a per-page mainnet recipient works too
       expect((await post("/api/tokens/intents", { tokens: ["intone"], intents: { ...on, recipient: "page.near" } }, owner)).status).toBe(200);
       await q({ mode: "tip", dry: true });

@@ -210,7 +210,7 @@ export const LaunchedToken = z.object({
   intents: z.lazy(() => IntentsConfig).optional(),
   /** Loofta "pay the creator" widget state (never the payout target). */
   loofta: z.object({ enabled: z.boolean(), ready: z.boolean(), custom: z.boolean() }).optional(),
-  /** What the NEAR Intents widget actually offers on this page (tip needs a mainnet recipient; buy needs a mainnet token). */
+  /** What the NEAR Intents widget actually offers on this page (tip needs a mainnet recipient). */
   intentsState: z.object({ tip: z.boolean(), buy: z.boolean(), recipient: z.string().nullable(), notes: z.array(z.string()) }).optional(),
 });
 export type LaunchedToken = z.infer<typeof LaunchedToken>;
@@ -481,8 +481,6 @@ export interface IntentsSettings {
   payout: string | null;
   /** Where tips go on a page without its own recipient (payout, else the creator on mainnet deployments), or null = tips hidden. */
   tipRecipient: string | null;
-  /** Buy mode needs the token on mainnet: false on testnet deployments. */
-  buy: boolean;
   network: "testnet" | "mainnet";
 }
 // ---------- AI keys (bring your own key) ----------
