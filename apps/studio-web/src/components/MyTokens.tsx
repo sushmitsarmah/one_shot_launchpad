@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { tokenIconDataUri, type IntentsConfig, type IntentsMode, type LaunchedToken, type LooftaToggle } from "@osl/schema";
 import { LOOFTA_TARGET_KINDS, payToFrom, type LooftaTargetKind } from "./LooftaKey";
+import { isMainnetAccount } from "../lib/intents";
 import { EXPLORER_BASE } from "../lib/config";
 import {
   fmtUnits,
@@ -315,7 +316,7 @@ export default function MyTokens({
                 <th>Tx</th>
                 <th>Venue</th>
                 <th>Views</th>
-                <th title="NEAR Intents widget on the token page: visitors buy or tip with any crypto (settles on mainnet)">Intents</th>
+                <th title="NEAR Intents widget on the token page: visitors tip (and, for mainnet tokens, buy) with any crypto. Always real NEAR mainnet payments.">Intents</th>
                 <th title="Loofta 'pay the creator' button on the token page (needs your Loofta key or a payout target)">Loofta</th>
                 <th className="c-actions">Actions</th>
               </tr>
@@ -376,6 +377,35 @@ export default function MyTokens({
                           />{" "}
                           {l.intents?.enabled ? (l.intents.mode === "both" ? "buy+tip" : l.intents.mode) : "off"}
                         </label>
+                        {l.intents?.enabled && l.intentsState && (
+                          <>
+                            {!l.intentsState.tip && !l.intentsState.buy ? (
+                              <span className="badge st-revoked" title={l.intentsState.notes.join(" ")}> hidden</span>
+                            ) : l.intentsState.notes.length > 0 ? (
+                              <span className="badge" title={l.intentsState.notes.join(" ")}> {l.intentsState.tip ? "tips only" : "buy only"}</span>
+                            ) : null}
+                            {l.intentsState.notes.map((n) => (
+                              <span key={n} className="muted small intents-note" style={{ display: "block" }}>{n}</span>
+                            ))}
+                            {l.intents.mode !== "buy" && (
+                              <button
+                                className="mini ghost"
+                                disabled={busy || !!l.deletedAt}
+                                title="NEAR mainnet account that receives tips on this page (overrides your NEAR Intents tips payout account)"
+                                onClick={() => {
+                                  const v = prompt(`NEAR mainnet account for tips on $${l.ticker} (like you.near; never .testnet). Leave empty to use your default payout account.`, l.intents?.recipient ?? "");
+                                  if (v === null) return;
+                                  const a = v.trim().toLowerCase();
+                                  if (a && !isMainnetAccount(a)) return alert("That isn't a NEAR mainnet account (use name.near or an implicit account, not .testnet).");
+                                  const { recipient: _old, ...rest } = intentsCfg(true, l);
+                                  onSetIntents([l.ticker], a ? { ...rest, recipient: a } : rest);
+                                }}
+                              >
+                                {l.intentsState.recipient ? `tips → ${l.intentsState.recipient}` : "set tip account"}
+                              </button>
+                            )}
+                          </>
+                        )}
                       </td>
                       <td className="c-intents">
                         <label

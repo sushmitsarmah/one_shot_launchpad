@@ -93,7 +93,7 @@ describe("loofta helpers", () => {
 });
 
 describe("loofta api", () => {
-  test("settings, key (write-only), payout target, bulk toggle, page config, checkout preview; nothing secret leaks", async () => {
+  test("settings, key (write-only), payout target, bulk toggle, page config, live checkout on every network; nothing secret leaks", async () => {
     const owner = await session("lena.testnet");
     const other = await session("otto.testnet");
     const kv = kvStore();
@@ -130,7 +130,7 @@ describe("loofta api", () => {
     const site = await app.request(`/api/site/${slug}`);
     const siteText = await site.text();
     const sj = JSON.parse(siteText);
-    expect(sj.loofta).toEqual({ enabled: true, route: "send", label: "the creator (by email)", preview: true });
+    expect(sj.loofta).toEqual({ enabled: true, route: "send", label: "the creator (by email)", preview: false });
     expect(sj.siteConfig.loofta).toBeUndefined();
     const launchesText = await (await app.request("/api/launches/lena.testnet")).text();
     const mine = JSON.parse(launchesText).launches as { ticker: string; loofta?: unknown }[];
@@ -138,14 +138,13 @@ describe("loofta api", () => {
     expect(mine.find((l) => l.ticker === "lfttwo")?.loofta).toBeUndefined();
     for (const t of [siteText, launchesText]) expect(t).not.toContain("example.com");
 
-    // checkout on testnet: preview, no URL, no Loofta call, no email
+    // Loofta is independent of the NEAR network: on a testnet deployment the keyless Send link is live too (the
+    // address only appears in the URL the visitor opens after clicking, never in page data)
     const n0 = calls.length;
     const co = await call("POST", "/api/loofta/checkout", { site: slug, amount: 5 });
-    const coText = await co.text();
     expect(co.status).toBe(200);
-    expect(JSON.parse(coText)).toMatchObject({ preview: true, url: null, route: "send", amount: 5 });
-    expect(coText).not.toContain("example.com");
-    expect(calls.length).toBe(n0);
+    expect(await co.json()).toMatchObject({ preview: false, route: "send", amount: 5, url: "https://pay.loofta.com/app?tab=send&to=jane.creator%40example.com&method=email&amount=5" });
+    expect(calls.length).toBe(n0); // Send links need no Loofta API call
     expect((await call("POST", "/api/loofta/checkout", { site: slug, amount: 0.5 })).status).toBe(400);
     expect((await call("POST", "/api/loofta/checkout", { site: slug, amount: 1.234 })).status).toBe(400);
     expect((await call("POST", "/api/loofta/checkout", { site: "lfttwo", amount: 5 })).status).toBe(403);
@@ -178,15 +177,18 @@ describe("loofta api", () => {
 
     // clearing the page override: key route; visitors see only "the creator's Loofta account"
     expect((await call("POST", "/api/tokens/loofta", { tokens: ["lftone"], loofta: { enabled: true, payTo: null } }, owner)).status).toBe(200);
-    expect((await (await app.request(`/api/site/${slug}`)).json()).loofta).toEqual({ enabled: true, route: "checkout", label: "the creator's Loofta account", preview: true });
-    const n1 = calls.length;
-    const pre = await (await call("POST", "/api/loofta/checkout", { site: slug, amount: 7 })).json();
-    expect(pre).toMatchObject({ preview: true, url: null, route: "checkout" });
-    expect(calls.length).toBe(n1); // testnet: no payment link is created
+    expect((await (await app.request(`/api/site/${slug}`)).json()).loofta).toEqual({ enabled: true, route: "checkout", label: "the creator's Loofta account", preview: false });
 
-    // mainnet behaviour (config only; Loofta is stubbed): a fresh checkout link with the owner's key, and the Send link
-    env("mainnet");
-    try {
+    // a fresh checkout link with the owner's key, on testnet deployments as on mainnet (Loofta is stubbed here)
+    for (const net of ["testnet", "mainnet"] as const) {
+      env(net);
+      const n1 = calls.length;
+      const j = await (await call("POST", "/api/loofta/checkout", { site: slug, amount: 7 })).json();
+      expect(j).toMatchObject({ preview: false, route: "checkout", url: "https://pay.loofta.com/checkout/abc123" });
+      expect(calls.length).toBe(n1 + 1);
+    }
+    env("testnet");
+    {
       const live = await (await call("POST", "/api/loofta/checkout", { site: slug, amount: 7, message: "gm\u0000 ser" })).json();
       expect(live).toMatchObject({ preview: false, route: "checkout", url: "https://pay.loofta.com/checkout/abc123" });
       expect(calls.at(-1)).toMatchObject({ method: "POST", auth: `Bearer ${GOOD}` });
@@ -208,8 +210,6 @@ describe("loofta api", () => {
       await call("DELETE", "/api/loofta/key", undefined, owner);
       const send = await (await call("POST", "/api/loofta/checkout", { site: slug, amount: 3 })).json();
       expect(send).toMatchObject({ preview: false, route: "send", url: "https://pay.loofta.com/app?tab=send&to=jane.creator%40example.com&method=email&amount=3" });
-    } finally {
-      env("testnet");
     }
 
     // removing every route hides the widget; disabling works without a route

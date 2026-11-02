@@ -24,6 +24,9 @@ import {
   type LaunchResponse,
   type Listing,
   IntentsQuoteRequest,
+  IntentsPayoutRequest,
+  isNearMainnetAccount,
+  type IntentsSettings,
   TokensIntentsRequest,
   TokensLooftaRequest,
   LooftaCheckoutRequest,
@@ -51,7 +54,7 @@ import {
 } from "@osl/schema";
 import { buildListParams, computePoints, listingCost, poolIdFor, rheaPoolUrl } from "./rhea";
 import { config } from "./config";
-import { DEPOSIT_ADDRESS_RE, oneClickQuote, oneClickStatus, oneClickTokens, planQuote, shapeQuote } from "./intents";
+import { DEPOSIT_ADDRESS_RE, intentsForPage, intentsPageState, intentsPayKey, oneClickQuote, oneClickStatus, oneClickTokens, planQuote, shapeQuote, tipRecipient } from "./intents";
 import { LLMCallError, envTarget, generateIdeas, type LLMTarget } from "./llm";
 import {
   KEY_RATE_LIMIT,
@@ -822,8 +825,9 @@ app.post("/api/tokens/intents", requireSession, requireAllowed, async (c) => {
   const body = TokensIntentsRequest.safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid request", issues: body.error.issues }, 400);
   const { tokens, intents } = body.data;
-  if (intents.recipient && config.networkId === "mainnet" && /\.testnet$/.test(intents.recipient))
-    return c.json({ error: "tips need a NEAR mainnet account" }, 400);
+  // NEAR Intents is mainnet-only on every deployment: a tip recipient must be able to receive on mainnet.
+  if (intents.recipient && !isNearMainnetAccount(intents.recipient))
+    return c.json({ error: "tips settle on NEAR mainnet: the recipient must be a mainnet account (name.near or an implicit account)" }, 400);
   const results: TokensActionResult[] = [];
   let forbidden = 0;
   for (const ticker of [...new Set(tokens)]) {
@@ -1108,12 +1112,23 @@ app.get("/api/site/:id", async (c) => {
   return c.json({ source: "chain", siteConfig: { ...siteConfig, ...(extra.intents ? { intents: extra.intents } : {}) }, siteUrl: siteUrl(ticker), ...extra });
 });
 
-/** For the token page: NEAR Intents settings (null = off), the network, and the Rhea DCL pool to swap in (buy mode). */
+/** The creator's NEAR mainnet payout account for Intents tips (KV `intentspay:<account>`, public by nature). */
+async function readIntentsPayout(account: string | null): Promise<string | null> {
+  if (!account) return null;
+  const v = (await kvStore().get(intentsPayKey(account)).catch(() => null)) ?? "";
+  return isNearMainnetAccount(v) ? v : null;
+}
+const mainnetDeployment = () => config.networkId === "mainnet";
+/**
+ * For the token page: NEAR Intents as offered (null = off or nothing available: tips need a mainnet recipient,
+ * buy needs a mainnet token), the network, and the Rhea DCL pool to swap in (buy mode).
+ */
 async function pageExtras(ticker: string, owner: string | null = null) {
-  const intents = await getIntents(ticker).catch(() => null);
-  const l = intents?.enabled ? await getListing(ticker).catch(() => null) : null;
+  const cfg = await getIntents(ticker).catch(() => null);
+  const intents = cfg?.enabled ? intentsForPage(cfg, owner, await readIntentsPayout(owner), mainnetDeployment()) : null;
+  const l = intents && intents.mode !== "tip" ? await getListing(ticker).catch(() => null) : null;
   return {
-    intents: intents?.enabled ? intents : null,
+    intents,
     loofta: await looftaForPage(ticker, owner),
     network: config.networkId,
     rhea: l?.ok && l.venue === "rhea" && l.poolId ? { dcl: config.dclContract, wnear: config.wnearContract, poolId: l.poolId, url: l.url } : null,
@@ -1135,8 +1150,9 @@ app.get("/api/intents/tokens", async (c) => {
 });
 
 /**
- * Quote for a token page's widget. The server picks the destination (tips: the creator; buy: wNEAR to the
- * visitor's account), never adds app fees, and off mainnet only returns price-only (dry) quotes.
+ * Quote for a token page's widget, always on NEAR mainnet (every deployment). The server picks the destination
+ * (tips: the creator's mainnet recipient; buy: wNEAR to the visitor's account) and never adds app fees.
+ * Buy is refused on testnet deployments (the token and its pool aren't on mainnet).
  */
 app.post("/api/intents/quote", async (c) => {
   const body = IntentsQuoteRequest.safeParse(await c.req.json().catch(() => null));
@@ -1155,7 +1171,8 @@ app.post("/api/intents/quote", async (c) => {
     return c.json({ error: `NEAR Intents is unreachable: ${(e as Error).message}` }, 502);
   }
   if (!tokens.some((t) => t.assetId === body.data.originAsset)) return c.json({ error: "that asset isn't supported by NEAR Intents" }, 400);
-  const plan = planQuote(body.data, await getIntents(ticker), owner, config.networkId === "mainnet");
+  const cfg = await getIntents(ticker);
+  const plan = planQuote(body.data, cfg, tipRecipient(cfg, owner, await readIntentsPayout(owner), mainnetDeployment()), mainnetDeployment());
   if (!plan.ok) return c.json({ error: plan.error }, plan.status);
   const r = await oneClickQuote(oneClick(), plan.body).catch((e) => ({ ok: false, status: 502, j: { message: (e as Error).message } }));
   if (!r.ok) return c.json({ error: `NEAR Intents: ${r.j?.message ?? `HTTP ${r.status}`}` }, r.status >= 500 ? 502 : 400);
@@ -1164,6 +1181,21 @@ app.post("/api/intents/quote", async (c) => {
   } catch (e) {
     return c.json({ error: (e as Error).message }, 502);
   }
+});
+
+async function intentsSettings(account: string): Promise<IntentsSettings> {
+  const payout = await readIntentsPayout(account);
+  return { payout, tipRecipient: tipRecipient(null, account, payout, mainnetDeployment()), buy: mainnetDeployment(), network: config.networkId };
+}
+app.get("/api/intents/settings", requireSession, requireAllowed, async (c) => c.json(await intentsSettings(c.var.account)));
+/** The creator's default NEAR mainnet account for tips on all their pages ({account: null} clears it). */
+app.put("/api/intents/payout", requireSession, requireAllowed, async (c) => {
+  const body = IntentsPayoutRequest.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: body.error.issues[0]?.message ?? "invalid account" }, 400);
+  const kv = kvStore();
+  if (body.data.account === null) await (kv.delete ? kv.delete(intentsPayKey(c.var.account)) : kv.put(intentsPayKey(c.var.account), ""));
+  else await kv.put(intentsPayKey(c.var.account), body.data.account);
+  return c.json({ ok: true, ...(await intentsSettings(c.var.account)) });
 });
 
 /** Swap status for a deposit address that 1Click issued (proxied /v0/status). */
@@ -1306,8 +1338,8 @@ app.post("/api/tokens/loofta", requireSession, requireAllowed, async (c) => {
 });
 
 /**
- * A visitor clicked "Pay with Loofta". Public, rate-limited per IP. Mainnet: a fresh Loofta checkout (owner's key)
- * or the Send link with the payout target. Elsewhere: a preview only; Loofta has no sandbox, so no link at all.
+ * A visitor clicked "Pay with Loofta". Public, rate-limited per IP. Always live, on every deployment (Loofta has
+ * no testnet; payments are real): a fresh Loofta checkout (owner's key) or the Send link with the payout target.
  */
 app.post("/api/loofta/checkout", async (c) => {
   const body = LooftaCheckoutRequest.safeParse(await c.req.json().catch(() => null));
@@ -1323,14 +1355,10 @@ app.post("/api/loofta/checkout", async (c) => {
   if (!owner) return c.json({ error: "no such token" }, 404);
   const page = await readLooftaPage(kvStore(), ticker);
   if (!page?.enabled) return c.json({ error: "Loofta payments aren't enabled on this page" }, 403);
-  const mainnet = config.networkId === "mainnet";
-  const r = await resolveRoute(kvStore(), ticker, owner, page, mainnet);
+  const r = await resolveRoute(kvStore(), ticker, owner, page, true);
   if (!r) return c.json({ error: "the creator hasn't finished setting up Loofta payments" }, 409);
   const amount = Math.round(body.data.amount * 100) / 100;
   const base = { route: r.route, label: r.label, amount };
-  if (!mainnet) {
-    return c.json({ ...base, preview: true, url: null, note: `Preview: on mainnet this opens Loofta ${r.route === "checkout" ? "checkout" : "Send"} for $${amount} to ${r.label}. Loofta has no test mode, so nothing opens here.` });
-  }
   const name = found?.site.branding.ticker ?? ticker.toUpperCase();
   if (r.route === "checkout") {
     let url: string;
@@ -1374,7 +1402,8 @@ const getListing = async (ticker: string): Promise<Listing | null> => {
 
 const withTakedown = async (l: LaunchedToken): Promise<LaunchedToken> => {
   const [td, intents, loofta] = await Promise.all([getTakedown(l.ticker), getIntents(l.ticker).catch(() => null), looftaState(l.ticker, l.ownerId).catch(() => null)]);
-  const withIntents = { ...l, ...(intents ? { intents } : {}), ...(loofta ? { loofta } : {}) };
+  const intentsState = intents?.enabled ? intentsPageState(intents, l.ownerId, await readIntentsPayout(l.ownerId), mainnetDeployment()) : null;
+  const withIntents = { ...l, ...(intents ? { intents } : {}), ...(intentsState ? { intentsState } : {}), ...(loofta ? { loofta } : {}) };
   return td ? { ...withIntents, deletedAt: td.at, ...(td.byAdmin ? { deletedByAdmin: true } : {}) } : withIntents;
 };
 

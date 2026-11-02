@@ -139,7 +139,7 @@ export default function LooftaKey({
           <p className="muted small">
             <a href="https://loofta.com" target="_blank" rel="noreferrer">Loofta</a> lets visitors pay you with any token on any chain; you receive USDC
             and can cash out to Venmo, Cash App, Revolut or Zelle. Payers pay Loofta's fees, you receive the amount. Turn it on per page in My tokens or before
-            launch. {s.network !== "mainnet" && <strong>On testnet the widget is a preview only: Loofta has no test mode, so no payment link is ever opened.</strong>}
+            launch. <strong>Payments are real on every Yeetpad network, testnet included: Loofta has no test mode.</strong>
           </p>
 
           <h3 className="small">1 · Payout target (no key needed)</h3>

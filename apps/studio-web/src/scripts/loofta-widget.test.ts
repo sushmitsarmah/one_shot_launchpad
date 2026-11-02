@@ -14,7 +14,10 @@ describe("loofta widget helpers", () => {
   });
   test("only Loofta pay URLs are opened", () => {
     expect(safeLooftaUrl("https://pay.loofta.com/checkout/abc")).toBe("https://pay.loofta.com/checkout/abc");
+    expect(safeLooftaUrl("https://pay.loofta.xyz/checkout/k1?callback=https%3A%2F%2Fyeetpad.fun")).toBe("https://pay.loofta.xyz/checkout/k1?callback=https%3A%2F%2Fyeetpad.fun");
     expect(safeLooftaUrl("https://pay.loofta.com.evil.io/x")).toBeNull();
+    expect(safeLooftaUrl("https://x@pay.loofta.xyz/checkout/k1")).toBeNull();
+    expect(safeLooftaUrl("http://pay.loofta.xyz/checkout/k1")).toBeNull();
     expect(safeLooftaUrl("javascript:alert(1)")).toBeNull();
     expect(safeLooftaUrl(null)).toBeNull();
   });

@@ -3,7 +3,9 @@
  * Buy: pay any supported asset -> 1Click delivers wNEAR to your NEAR account -> swap wNEAR -> $TOKEN on
  * Rhea with your wallet (1Click can't route into brand-new tokens). Tip: pay any asset -> creator gets USDC/wNEAR.
  * Quotes/status go through our API (proxy of 1Click). Deposit addresses are only ever taken from that answer.
- * Off mainnet the API only returns price-only quotes, so this never shows a deposit address on testnet.
+ * 1Click only runs on NEAR mainnet, so quotes and deposits are always real mainnet ones, on every Yeetpad
+ * deployment. Buy is only offered on mainnet deployments (a testnet token's Rhea pool isn't on mainnet), and tips
+ * only when the creator has a mainnet recipient; the API sends the effective settings.
  */
 import qrcode from "qrcode-generator";
 import { viewCall } from "../lib/near";
@@ -32,25 +34,22 @@ const h = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLEle
 };
 
 export function mountIntents(host: HTMLElement, ctx: IntentsCtx) {
-  const mainnet = ctx.network === "mainnet";
-  const modes: ("buy" | "tip")[] = ctx.intents.mode === "both" ? ["buy", "tip"] : [ctx.intents.mode];
+  // buy needs the token on mainnet; the API already drops it on testnet deployments, this is belt and braces
+  const modes = (ctx.intents.mode === "both" ? (["buy", "tip"] as const) : ([ctx.intents.mode] as const)).filter((m) => m !== "buy" || ctx.network === "mainnet");
+  if (!modes.length) return;
   let mode = modes[0];
   let tokens: ReturnType<typeof payOptions> = [];
   let polling: number | null = null;
 
   const title = h("h2", {});
   const tabs = h("div", { cls: "tki-tabs", role: "tablist" } as never);
-  const note = h("p", { cls: "tki-note" });
-  if (!mainnet)
-    note.textContent = "Preview: NEAR Intents settles on NEAR mainnet only. This testnet page shows live prices but can't take payments, so no deposit address is shown.";
-  else note.hidden = true;
+  const note = h("p", { cls: "tki-note", textContent: "Real payment on NEAR mainnet: what you deposit is swapped and delivered for real." });
   const asset = h("select", { cls: "tki-in", ariaLabel: "pay with" } as never) as HTMLSelectElement;
   const amount = h("input", { cls: "tki-in", inputMode: "decimal", placeholder: "Amount", ariaLabel: "amount" } as never) as HTMLInputElement;
   const recipient = h("input", { cls: "tki-in", placeholder: "your-account.near", ariaLabel: "your NEAR account", autocomplete: "off", spellcheck: false } as never) as HTMLInputElement;
   const refund = h("input", { cls: "tki-in", placeholder: "Refund address on the chain you pay from", ariaLabel: "refund address", autocomplete: "off", spellcheck: false } as never) as HTMLInputElement;
   const recipRow = h("label", { cls: "tki-field" }, h("span", { textContent: "Your NEAR account (gets wNEAR)" }), recipient);
   const refundRow = h("label", { cls: "tki-field" }, h("span", { textContent: "Refund address (if the swap can't complete)" }), refund);
-  if (!mainnet) refundRow.hidden = true;
   const quoteBtn = h("button", { cls: "btn tki-btn", type: "button", textContent: "Get quote" });
   const depositBtn = h("button", { cls: "btn btn-ghost tki-btn", type: "button", textContent: "Get deposit address", hidden: true });
   const msg = h("p", { cls: "tki-msg", role: "status" } as never);
@@ -120,8 +119,8 @@ export function mountIntents(host: HTMLElement, ctx: IntentsCtx) {
     const b: Record<string, unknown> = { site: ctx.site, mode, originAsset: t.assetId, amount: units.toString(), dry };
     const r = recipient.value.trim();
     if (mode === "buy" && r) {
-      if (mainnet && !isMainnetAccount(r)) throw new Error("Enter a NEAR mainnet account like you.near.");
-      if (mainnet) b.recipient = r;
+      if (!isMainnetAccount(r)) throw new Error("Enter a NEAR mainnet account like you.near.");
+      b.recipient = r;
     }
     if (!dry) {
       if (mode === "buy" && !r) throw new Error("Enter the NEAR account that should receive wNEAR.");
@@ -153,8 +152,8 @@ export function mountIntents(host: HTMLElement, ctx: IntentsCtx) {
       );
       quoteBox.hidden = false;
       if (mode === "buy" && q.amountOut) void estimateTokens(BigInt(q.amountOut));
-      depositBtn.hidden = !mainnet;
-      setMsg(mainnet ? "Prices move; the deposit address step gets a fresh, binding quote." : "Preview only on testnet: swaps settle on NEAR mainnet.");
+      depositBtn.hidden = false;
+      setMsg("Prices move; the deposit address step gets a fresh, binding quote.");
     } catch (e) {
       setMsg((e as Error).message, true);
     } finally {
@@ -245,7 +244,7 @@ export function mountIntents(host: HTMLElement, ctx: IntentsCtx) {
     const out = h("p", { cls: "tki-small", role: "status" } as never);
     step2.replaceChildren(
       h("h3", { textContent: `Step 2: swap wNEAR → $${ctx.sym} on Rhea` }),
-      h("p", { cls: "tki-small", textContent: `1Click can't deliver brand-new tokens, so it delivers wNEAR and your wallet swaps it in the token's Rhea pool. Max 1% price slippage.${mainnet ? "" : " (Testnet: this step works with testnet wNEAR/NEAR.)"}` }),
+      h("p", { cls: "tki-small", textContent: `1Click can't deliver brand-new tokens, so it delivers wNEAR and your wallet swaps it in the token's Rhea pool. Max 1% price slippage.` }),
       h("div", { cls: "tki-actions" }, amt, btn),
       out,
       ...(rhea.url ? [h("p", { cls: "tki-small" }, h("a", { href: rhea.url, target: "_blank", rel: "noreferrer", textContent: "Or open the pool on Rhea ↗" }))] : []),

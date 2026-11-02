@@ -63,10 +63,14 @@ export function formatUnits(v: bigint, decimals: number, dp = 6): string {
   return `${(v / base).toString()}${frac ? `.${frac}` : ""}`;
 }
 
-/** NEAR mainnet account (named .near / top-level or 64-hex implicit / 0x EVM implicit). */
+/**
+ * A NEAR mainnet account: name.near (or another mainnet top-level), 64-hex implicit or 0x EVM implicit; never
+ * `.testnet`. Mirrors isNearMainnetAccount in @osl/schema (copied: this bundle stays zod-free).
+ */
 export function isMainnetAccount(a: string): boolean {
-  if (a.length < 2 || a.length > 64 || /\.testnet$/.test(a)) return false;
-  return /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/.test(a);
+  if (typeof a !== "string" || a.length < 2 || a.length > 64) return false;
+  if (/^[0-9a-f]{64}$/.test(a) || /^0x[0-9a-f]{40}$/.test(a)) return true;
+  return !/\.(testnet|betanet)$/.test(a) && /^(([a-z\d]+[-_])*[a-z\d]+\.)+([a-z\d]+[-_])*[a-z\d]+$/.test(a);
 }
 
 /** Minimum output for a Rhea swap: quoted × (1 − bps), rounded down. */

@@ -9,6 +9,22 @@ export const NearAccountId = z
   .max(64)
   .regex(/^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/, "invalid NEAR account id");
 
+/**
+ * Can this account receive on NEAR mainnet? A named sub-account of a mainnet top-level account (name.near,
+ * name.tg, ...), NEAR implicit (64 hex) or ETH-implicit (0x + 40 hex). Never a `.testnet` name: that account only
+ * exists on testnet, so mainnet funds sent to it would be lost.
+ */
+export function isNearMainnetAccount(a: string): boolean {
+  if (typeof a !== "string" || a.length < 2 || a.length > 64) return false;
+  if (/^[0-9a-f]{64}$/.test(a) || /^0x[0-9a-f]{40}$/.test(a)) return true;
+  return !/\.(testnet|betanet)$/.test(a) && /^(([a-z\d]+[-_])*[a-z\d]+\.)+([a-z\d]+[-_])*[a-z\d]+$/.test(a);
+}
+export const MainnetAccountId = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .refine(isNearMainnetAccount, "enter a NEAR mainnet account (like name.near, or a 64-hex / 0x implicit account), not a .testnet one");
+
 /** Ticker used as the token sub-account: `<ticker>.<factory>`. Mirrors the factory's validation. */
 export const Ticker = z
   .string()
@@ -194,6 +210,8 @@ export const LaunchedToken = z.object({
   intents: z.lazy(() => IntentsConfig).optional(),
   /** Loofta "pay the creator" widget state (never the payout target). */
   loofta: z.object({ enabled: z.boolean(), ready: z.boolean(), custom: z.boolean() }).optional(),
+  /** What the NEAR Intents widget actually offers on this page (tip needs a mainnet recipient; buy needs a mainnet token). */
+  intentsState: z.object({ tip: z.boolean(), buy: z.boolean(), recipient: z.string().nullable(), notes: z.array(z.string()) }).optional(),
 });
 export type LaunchedToken = z.infer<typeof LaunchedToken>;
 
@@ -422,7 +440,10 @@ export type IntentsMode = z.infer<typeof IntentsMode>;
 export const IntentsConfig = z.object({
   enabled: z.boolean(),
   mode: IntentsMode.default("both"),
-  /** Tips go here; defaults to the token's creator. */
+  /**
+   * Per-page NEAR mainnet tip recipient. Falls back to the creator's mainnet payout account (Studio), then, on
+   * mainnet deployments only, the creator's own account. Must be a mainnet account (checked on save and use).
+   */
   recipient: NearAccountId.optional(),
   /** What tips arrive as on NEAR. */
   tipAsset: z.enum(["usdc", "wnear"]).default("usdc"),
@@ -447,11 +468,23 @@ export const IntentsQuoteRequest = z.object({
   refundTo: z.string().trim().min(3).max(128).regex(/^[A-Za-z0-9._:\-]+$/, "refund address has invalid characters").optional(),
   /** buy: the visitor's NEAR mainnet account that receives wNEAR (required for a real deposit address). */
   recipient: NearAccountId.optional(),
-  /** Price check only: no deposit address. Always true on testnet. */
+  /** Price check only: no deposit address. 1Click is always mainnet, on every Yeetpad deployment. */
   dry: z.boolean().optional(),
   slippageBps: z.number().int().min(10).max(500).optional(),
 });
 export type IntentsQuoteRequest = z.infer<typeof IntentsQuoteRequest>;
+/** The creator's default NEAR mainnet account for Intents tips (null clears it). */
+export const IntentsPayoutRequest = z.object({ account: MainnetAccountId.nullable() }).strict();
+export type IntentsPayoutRequest = z.infer<typeof IntentsPayoutRequest>;
+export interface IntentsSettings {
+  /** Saved mainnet payout account, or null. */
+  payout: string | null;
+  /** Where tips go on a page without its own recipient (payout, else the creator on mainnet deployments), or null = tips hidden. */
+  tipRecipient: string | null;
+  /** Buy mode needs the token on mainnet: false on testnet deployments. */
+  buy: boolean;
+  network: "testnet" | "mainnet";
+}
 // ---------- AI keys (bring your own key) ----------
 /** Fixed allowlist; the API rejects anything else (no custom base URLs). */
 export const LLM_PROVIDERS = ["nearai", "ollama"] as const;
@@ -548,7 +581,7 @@ export interface LooftaPublic {
   route: LooftaRoute;
   /** e.g. "the creator's Loofta account", "@name on X", "j•••@gmail.com". */
   label: string;
-  /** Off mainnet the API never creates a link or returns a payout URL (Loofta has no sandbox). */
+  /** Always false: Loofta is live on every deployment (kept for older cached pages). */
   preview: boolean;
 }
 /** On LaunchedToken (public): on/off, whether a route exists, and whether this page has its own payout target. */

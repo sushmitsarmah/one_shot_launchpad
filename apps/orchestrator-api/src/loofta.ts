@@ -10,8 +10,8 @@
  *    and only handed out as a URL from POST /api/loofta/checkout, so it never appears in page config, the
  *    public launches list or the HTML. Visitors see a masked label only.
  *
- * Loofta has no sandbox (keys are live, real money), so off mainnet nothing is created and no payout URL is
- * returned: the widget is a preview.
+ * Loofta has no sandbox and no testnet (keys are live, real money). It is independent of the NEAR network, so
+ * every Yeetpad deployment (testnet included) creates real links and returns real payout URLs.
  */
 import { LOOFTA_SOCIAL_LABEL, type LooftaKeySummary, type LooftaPayTo, type LooftaPayToSummary, type LooftaPublic, type LooftaRoute } from "@osl/schema";
 import { config } from "./config";
@@ -161,7 +161,7 @@ export async function resolveRoute(kv: KVLike, ticker: string, owner: string | n
   if (p) return { route: "send", label: payToLabel(p), ...(withSecrets ? { payTo: p } : {}) };
   return null;
 }
-export const toPublic = (r: Resolved): LooftaPublic => ({ enabled: true, route: r.route, label: r.label, preview: config.networkId !== "mainnet" });
+export const toPublic = (r: Resolved): LooftaPublic => ({ enabled: true, route: r.route, label: r.label, preview: false });
 
 // ---------------- Loofta HTTP (only ever to config.looftaApiBase, never following redirects) ----------------
 const TIMEOUT_MS = 12_000;
@@ -211,7 +211,7 @@ export async function validateLooftaKey(apiKey: string): Promise<LooftaValidatio
   if (r.status === 429) return { ok: false, status: 429, error: "Loofta rate limit reached (HTTP 429); try again in a minute." };
   return { ok: false, status: 502, error: `Loofta returned HTTP ${r.status} while checking the key; try again later.` };
 }
-/** Mainnet only (caller checks): a one-off Loofta payment link paying the key owner. Returns only the checkout URL. */
+/** A one-off (real) Loofta payment link paying the key owner. Returns only the checkout URL. */
 export async function createPaymentLink(apiKey: string, amountUsd: number, message: string, returnUrl: string | null): Promise<string> {
   const r = await looftaFetch("/payment-links", apiKey, {
     method: "POST",

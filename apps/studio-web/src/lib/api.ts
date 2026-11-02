@@ -23,6 +23,7 @@ import type {
   LooftaPayTo,
   LooftaSettings,
   LooftaToggle,
+  IntentsSettings,
 } from "@osl/schema";
 import { INTENTS_TOKENS_MAX, MAX_BATCH, TOKENS_DELETE_MAX, chunk, pool, type IntentsConfig, type TokensActionResult } from "@osl/schema";
 import { API_URL } from "./config";
@@ -285,4 +286,7 @@ export const getLooftaSettings = (token: string) => authed<LooftaSettings>("GET"
 export const saveLooftaKey = (apiKey: string, token: string) => authed<LooftaSettings & { ok: true }>("PUT", "/api/loofta/key", token, { apiKey });
 export const testLooftaKey = (token: string) => authed<LooftaSettings & { ok: boolean; error?: string }>("POST", "/api/loofta/key/test", token, {});
 export const deleteLooftaKey = (token: string) => authed<LooftaSettings & { ok: true }>("DELETE", "/api/loofta/key", token);
+// ---------- NEAR Intents tips: the creator's NEAR mainnet payout account (1Click is mainnet-only) ----------
+export const getIntentsSettings = (token: string) => authed<IntentsSettings>("GET", "/api/intents/settings", token);
+export const saveIntentsPayout = (account: string | null, token: string) => authed<IntentsSettings & { ok: true }>("PUT", "/api/intents/payout", token, { account });
 export const saveLooftaPayTo = (payTo: LooftaPayTo | null, token: string) => authed<LooftaSettings & { ok: true }>("PUT", "/api/loofta/payto", token, { payTo });

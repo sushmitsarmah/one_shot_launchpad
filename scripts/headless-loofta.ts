@@ -1,5 +1,6 @@
 // Headless check of a token page with Loofta enabled (desktop + mobile width), no wallet, no funds.
-// Clicks "Pay with Loofta" (testnet => preview message, no tab opens). Usage: SITE=https://yeetpad.fun SLUG=neon-paw-arcade-2 bun headless-loofta.ts
+// Loofta is live on every network: CLICK=1 clicks "Pay with Loofta", which creates a real (unpaid) payment link and
+// opens Loofta in a new tab; never pay it. Without CLICK only the form is checked. Usage: SITE=https://yeetpad.fun SLUG=neon-paw-arcade-2 bun headless-loofta.ts
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
@@ -43,10 +44,12 @@ await setVal(".tk-loofta input[aria-label='amount in USD']", "0.5");
 out.lowAmountMsg = await evalJs(`document.querySelector('.tk-loofta .tki-msg').textContent`);
 out.lowAmountDisabled = await evalJs(`document.querySelector('.tk-loofta .tkl-pay').disabled`);
 await setVal(".tk-loofta input[aria-label='amount in USD']", "5");
-await evalJs(`document.querySelector('.tk-loofta .tkl-pay').click(); true`);
-await waitFor(`/Preview|opened|Couldn't/.test(document.querySelector('.tk-loofta .tki-msg').textContent)`, 15000);
-out.clickMsg = await evalJs(`document.querySelector('.tk-loofta .tki-msg').textContent`);
-out.newTabsOpened = opened; // the page itself is excluded
+if (process.env.CLICK) {
+  await evalJs(`document.querySelector('.tk-loofta .tkl-pay').click(); true`);
+  await waitFor(`/opened|Couldn't/.test(document.querySelector('.tk-loofta .tki-msg').textContent)`, 15000);
+  out.clickMsg = await evalJs(`document.querySelector('.tk-loofta .tki-msg').textContent`);
+  out.newTabsOpened = opened; // the page itself is excluded
+}
 await shot("loofta-desktop");
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await sleep(800);

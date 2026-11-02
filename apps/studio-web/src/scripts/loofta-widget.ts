@@ -2,20 +2,21 @@
  * Loofta "pay the creator" widget for a token page (/t/<slug>), shown only when the creator enabled it and has a
  * Loofta key or payout target. The page only knows the route and a masked label: the payment URL (a fresh Loofta
  * checkout made with the creator's key on the server, or Loofta Send with the creator's target) comes from
- * POST /api/loofta/checkout per click. Off mainnet that call returns a preview and no URL, because Loofta has no
- * sandbox. Loofta's pages can't be framed (frame-ancestors 'none'), so the payment opens in a new tab.
+ * POST /api/loofta/checkout per click. Loofta has no testnet, so payments are always real, on every Yeetpad
+ * deployment. Loofta's pages can't be framed (frame-ancestors 'none'), so the payment opens in a new tab.
  */
 export interface LooftaCtx {
   api: string;
   site: string;
   sym: string;
-  loofta: { enabled: true; route: "checkout" | "send"; label: string; preview: boolean };
+  loofta: { enabled: true; route: "checkout" | "send"; label: string; preview?: boolean };
 }
 
 const PRESETS = [5, 10, 25];
 const MIN = 1;
 const MAX = 10_000;
-const PAY_ORIGIN = "https://pay.loofta.com";
+/** Loofta's checkout hosts: Send lives on pay.loofta.com, API-created checkout links on pay.loofta.xyz. */
+const PAY_ORIGINS = new Set(["https://pay.loofta.com", "https://pay.loofta.xyz"]);
 const h = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> & { cls?: string } = {}, ...kids: (Node | string | null)[]) => {
   const el = document.createElement(tag);
   const { cls, ...rest } = props;
@@ -36,14 +37,13 @@ export function safeLooftaUrl(u: unknown): string | null {
   if (typeof u !== "string") return null;
   try {
     const url = new URL(u);
-    return url.origin === PAY_ORIGIN ? url.href : null;
+    return PAY_ORIGINS.has(url.origin) && !url.username && !url.password ? url.href : null;
   } catch {
     return null;
   }
 }
 
 export function mountLoofta(host: HTMLElement, ctx: LooftaCtx) {
-  const preview = ctx.loofta.preview;
   const amount = h("input", { cls: "tki-in", inputMode: "decimal", placeholder: "Amount in USD", ariaLabel: "amount in USD", value: "10" } as never) as HTMLInputElement;
   const note = h("input", { cls: "tki-in", placeholder: "Note (optional)", ariaLabel: "note", maxLength: 200 } as never) as HTMLInputElement;
   const presets = h(
@@ -60,9 +60,6 @@ export function mountLoofta(host: HTMLElement, ctx: LooftaCtx) {
   );
   const pay = h("button", { cls: "btn tki-btn tkl-pay", type: "button", textContent: "Pay with Loofta ↗" });
   const msg = h("p", { cls: "tki-msg", role: "status" } as never);
-  const pnote = h("p", { cls: "tki-note" });
-  if (preview) pnote.textContent = "Preview: Loofta payments only run on mainnet and Loofta has no test mode, so this testnet page never opens a payment.";
-  else pnote.hidden = true;
   const how =
     ctx.loofta.route === "checkout"
       ? "Opens Loofta's checkout in a new tab: pay with USDC, SOL, ETH, BTC and 150+ other tokens from any chain. No Loofta account needed."
@@ -92,22 +89,18 @@ export function mountLoofta(host: HTMLElement, ctx: LooftaCtx) {
     const usd = parseUsd(amount.value);
     if (usd === null) return sync();
     // Open the tab inside the click (popup blockers), then point it at Loofta once the API answers.
-    const win = preview ? null : window.open("about:blank", "_blank");
+    const win = window.open("about:blank", "_blank");
     pay.disabled = true;
-    setMsg(preview ? "Checking…" : "Opening Loofta…");
+    setMsg("Opening Loofta…");
     try {
       const r = await fetch(`${ctx.api}/api/loofta/checkout`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ site: ctx.site, amount: usd, ...(note.value.trim() ? { message: note.value.trim() } : {}) }),
       });
-      const j = (await r.json().catch(() => ({}))) as { url?: string | null; preview?: boolean; note?: string; error?: string };
+      const j = (await r.json().catch(() => ({}))) as { url?: string | null; note?: string; error?: string };
       if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
-      if (j.preview || !j.url) {
-        win?.close();
-        setMsg(j.note ?? `Preview: on mainnet this opens Loofta for $${usd} to ${ctx.loofta.label}.`);
-        return;
-      }
+      if (!j.url) throw new Error(j.note ?? "Loofta didn't return a payment link");
       const url = safeLooftaUrl(j.url);
       if (!url) throw new Error("unexpected payment link");
       if (win) {
@@ -127,8 +120,7 @@ export function mountLoofta(host: HTMLElement, ctx: LooftaCtx) {
     "div",
     { cls: "tk-card tk-intents tk-loofta" },
     h("h2", { textContent: `Tip the $${ctx.sym} creator` }),
-    h("p", { cls: "tki-small", textContent: `Send a tip to ${ctx.loofta.label} with Loofta. ${how}` }),
-    pnote,
+    h("p", { cls: "tki-small", textContent: `Send a tip to ${ctx.loofta.label} with Loofta. ${how} Payments are real.` }),
     presets,
     h("div", { cls: "tki-grid" }, h("label", { cls: "tki-field" }, h("span", { textContent: "Amount (USD)" }), amount), h("label", { cls: "tki-field" }, h("span", { textContent: "Note" }), note)),
     h("div", { cls: "tki-actions" }, pay),

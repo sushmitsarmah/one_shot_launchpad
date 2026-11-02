@@ -30,6 +30,7 @@ import { viewCall } from "../lib/near";
 import { getVaultBalance, txFailure } from "../lib/near";
 import { getLooftaSettings, tokensIntents, tokensLoofta } from "../lib/api";
 import LooftaKey from "./LooftaKey";
+import IntentsPayout from "./IntentsPayout";
 import { classifyPull, minsFor, quotePosition, removablePositions, removeLiquidityCall, UNPROTECTED, type DclPosition, type PullItem, type PullResult } from "../lib/dcl";
 import { aiComputeCost, ApiError, isUserKeyError, tokensAction, appLocked, generate, justhootFinalize, justhootPrepare, launchBatch, listOnRhea, me, myLaunches, nearlyFinalize, nearlyPrepare, quote, saveSiteSettings, UnauthorizedError, venueStatus, type ListOnChoice } from "../lib/api";
 import { applyResults, intentsToApply, isDone, loadDraft, loadIntentsPending, loadLooftaPending, looftaToApply, saveLooftaPending, loadRun, mark, newRun, reconcile, runCounts, saveDraft, saveIntentsPending, saveRun, type LaunchRun, type RunItem } from "../lib/run";
@@ -1194,6 +1195,7 @@ export default function Studio() {
       <>
         <AiKey key={`${session.accountId}:${keyEpoch}`} scope="user" getToken={adminToken} onAuthError={onAdminError} onChange={setMyKey} aiCost={aiCost} />
         <LooftaKey key={`loofta:${session.accountId}`} getToken={adminToken} onAuthError={onAdminError} onChange={setLoofta} />
+        <IntentsPayout key={`intents:${session.accountId}`} getToken={adminToken} onAuthError={onAdminError} />
       </>
     ) : (
       <section className="card aikey run-full">
@@ -1209,7 +1211,7 @@ export default function Studio() {
           <div className="row">
             <button className="ghost" onClick={() => setPicked(ideas.map(() => true))}>Select all</button>
             <button className="ghost" onClick={() => setPicked(ideas.map(() => false))}>None</button>
-            <label className="pick small intents-all" title="Adds a NEAR Intents widget to each token page: visitors can buy or tip with BTC, ETH, SOL, USDC… (settles on NEAR mainnet). Change it per token later in My tokens.">
+            <label className="pick small intents-all" title="Adds a NEAR Intents widget to each token page: visitors tip (and, on mainnet, buy) with BTC, ETH, SOL, USDC… Always real NEAR mainnet payments; tips need a mainnet payout account (see NEAR Intents tips). Change it per token later in My tokens.">
               <input
                 type="checkbox"
                 checked={ideas.length > 0 && ideas.every((_, i) => intentsOn[i])}
@@ -1598,7 +1600,7 @@ function IdeaCard({
       </p>
       <p>{idea.description}</p>
       {onIntents && (
-        <label className="pick small idea-intents" title="NEAR Intents widget on this token's page: buy or tip with any crypto (mainnet)">
+        <label className="pick small idea-intents" title="NEAR Intents widget on this token's page: tip (and, on mainnet, buy) with any crypto; real NEAR mainnet payments">
           <input type="checkbox" checked={!!intents} onChange={(e) => onIntents(e.target.checked)} /> NEAR Intents on its page
         </label>
       )}
