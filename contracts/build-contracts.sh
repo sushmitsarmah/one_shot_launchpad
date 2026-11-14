@@ -25,3 +25,4 @@ build near-ft-token
 cp "$OUT/near_ft_token.wasm" near-ft-factory/res/near_ft_token.wasm
 build near-ft-factory
 build near-launch-vault
+build swarm-market

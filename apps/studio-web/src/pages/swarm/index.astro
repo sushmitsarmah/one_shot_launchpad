@@ -1,0 +1,82 @@
+---
+// Swarm Market live page (NEAR hackathon track "AI Swarms: many agents, one economy").
+// Everything shown is read straight from the swarm-market contract on testnet by src/scripts/swarm-page.ts.
+import Base from "../../layouts/Base.astro";
+import "../../styles/swarm.css";
+const MARKET = "market.yeetpad-swarm.testnet";
+---
+<Base title="Swarm Market · Yeetpad" description="20 buyer agents and 5 seller agents trade Yeetpad tokens in sealed-bid rounds on NEAR testnet. Live rounds, bids, clearing prices and settlement." page="app">
+  <main class="sw-main">
+    <section class="sw-hero">
+      <div>
+        <span class="pill pill-testnet">testnet · live</span>
+        <h1>Swarm <span class="sw-hl">Market</span></h1>
+        <p class="sw-lede">
+          25 AI agents, one economy. Five <b>seller agents</b> launched their own Yeetpad tokens and auction lots of them.
+          Twenty <b>buyer agents</b> with scripted strategies pool their demand into those lots with <b>sealed bids</b>
+          (commit a hash, then reveal). The <a href={`https://testnet.nearblocks.io/address/${MARKET}`} target="_blank" rel="noreferrer">market contract</a>
+          clears each lot at one uniform price and settles on NEAR: tokens to the winners, NEAR to the sellers, refunds to everyone else.
+          No LLM calls, and no fees.
+        </p>
+        <p class="sw-links">
+          <a class="btn btn-sm" href="https://github.com/sushmitsarmah/one_shot_launchpad/blob/main/RULES.md" target="_blank" rel="noreferrer">Market rules ↗</a>
+          <a class="btn btn-sm btn-ghost" href={`https://testnet.nearblocks.io/address/${MARKET}`} target="_blank" rel="noreferrer">{MARKET} ↗</a>
+        </p>
+      </div>
+      <div class="sw-stats" id="sw-stats">
+        <div class="sw-stat"><b id="st-rounds">–</b><span>rounds settled</span></div>
+        <div class="sw-stat"><b id="st-volume">–</b><span>NEAR traded</span></div>
+        <div class="sw-stat"><b id="st-tokens">–</b><span>tokens delivered</span></div>
+        <div class="sw-stat"><b id="st-bids">–</b><span>sealed bids</span></div>
+      </div>
+    </section>
+
+    <section class="sw-card sw-now" id="sw-now">
+      <div class="sw-now-head">
+        <h2>Now</h2>
+        <span class="sw-phase" id="now-phase">loading…</span>
+        <span class="sw-muted" id="now-detail"></span>
+      </div>
+      <ol class="sw-steps" id="now-steps">
+        <li data-p="Listing"><b>Listing</b><span>sellers escrow a lot with a reserve price</span></li>
+        <li data-p="Commit"><b>Commit</b><span>buyers post sha256(bid + salt) and a NEAR deposit</span></li>
+        <li data-p="Reveal"><b>Reveal</b><span>buyers open their bids; the hash must match</span></li>
+        <li data-p="Clearing"><b>Clear</b><span>one price per lot; anyone can trigger it</span></li>
+        <li data-p="Cleared"><b>Settled</b><span>tokens, NEAR and refunds sent on-chain</span></li>
+      </ol>
+    </section>
+
+    <section class="sw-grid">
+      <div class="sw-card">
+        <h2>Clearing price per token</h2>
+        <p class="sw-muted">NEAR per whole token, by seller and round. Gaps are rounds where that lot didn't sell.</p>
+        <div id="sw-chart" class="sw-chart"></div>
+      </div>
+      <div class="sw-card">
+        <h2>Agents</h2>
+        <p class="sw-muted">Each agent is its own sub-account of <code>yeetpad-swarm.testnet</code>. Net NEAR is what the market paid it minus what it paid the market (gas not included).</p>
+        <div class="sw-table-wrap"><table class="sw-table" id="sw-agents"><thead><tr>
+          <th>Agent</th><th>Strategy</th><th class="num">Balance</th><th class="num">Net NEAR</th><th class="num">Tokens</th><th class="num">Won / bids</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="sw-h2">Rounds</h2>
+      <div id="sw-rounds"><p class="sw-muted">Loading rounds from chain…</p></div>
+    </section>
+
+    <section class="sw-card sw-how">
+      <h2>Run it yourself</h2>
+      <ol>
+        <li><code>bun run swarm -- --offline --rounds 5</code> runs the same market in memory: no chain, no keys, no LLM.</li>
+        <li><code>bun run swarm -- --rounds 3</code> runs real rounds on testnet with the 25 agent accounts. They show up here within seconds.</li>
+        <li>Every commit, reveal, clear and delivery links to its transaction on nearblocks. Commit hashes are <code>sha256("round:lot:buyer:qty:price:salt")</code>.</li>
+      </ol>
+      <p class="sw-muted">Testnet only: NEAR Intents' verifier runs on mainnet, so this market settles with direct NEAR and NEP-141 transfers from its escrow. See RULES.md.</p>
+    </section>
+  </main>
+  <script>
+    import "../../scripts/swarm-page";
+  </script>
+</Base>

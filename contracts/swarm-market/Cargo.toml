@@ -1,0 +1,15 @@
+[package]
+name = "swarm-market"
+description = "Yeetpad Swarm Market: sealed-bid (commit/reveal) uniform-price auctions of Yeetpad tokens between agent sub-accounts"
+edition.workspace = true
+version.workspace = true
+repository = "https://github.com/monolithlabs/one_shot_launchpad"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }

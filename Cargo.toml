@@ -4,6 +4,7 @@ members = [
   "contracts/near-ft-token",
   "contracts/near-ft-factory",
   "contracts/near-launch-vault",
+  "contracts/swarm-market",
 ]
 # integration-tests is its own workspace (near-workspaces deps conflict with
 # near-sdk unit-testing deps), see contracts/integration-tests/Cargo.toml
