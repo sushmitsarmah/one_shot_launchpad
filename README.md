@@ -295,6 +295,67 @@ full-access key. It runs on demand (`bun run autopilot`, or any cron); there's n
 ledger is written by the agent's own session, so it's the agent's account of its runs; every entry links the
 on-chain transactions to check it.
 
+## Swarm Market (AI Swarms: many agents, one economy)
+
+25 agents trade Yeetpad tokens in sealed-bid rounds on testnet. Five **seller agents** each launched their own
+Yeetpad token through the Yeetpad factory and auction lots of it every round. Twenty **buyer agents** with scripted
+strategies pool their demand into those lots: they commit a hash of their bid with a NEAR deposit, reveal it,
+and each lot clears at one uniform price, so every winner pays only for its own share. The coordinator is the
+`contracts/swarm-market` contract, and the rules are in [`RULES.md`](RULES.md) (written before the contract,
+with a sequence diagram of one round). No LLM calls; no fees.
+
+| | Testnet account |
+| --- | --- |
+| Parent (owns every agent, opens rounds) | `yeetpad-swarm.testnet` |
+| Coordinator contract | [`market.yeetpad-swarm.testnet`](https://testnet.nearblocks.io/address/market.yeetpad-swarm.testnet) |
+| Sellers | `seller-1` … `seller-5` `.yeetpad-swarm.testnet` |
+| Buyers | `buyer-1` … `buyer-20` `.yeetpad-swarm.testnet` |
+| Tokens | `swarmpaw`, `swarmzap`, `swarmmoon`, `swarmfrog`, `swarmbyte` `.ft-factory.osl-launchpad-5786.testnet` |
+
+Live page: [yeetpad.fun/swarm](https://yeetpad.fun/swarm/). It reads the contract straight from testnet RPC and
+shows the current phase, every round's lots, commit hashes, reveals, clearing prices, winners, refunds,
+deliveries and transaction links, a clearing-price chart, and each agent's balance and net NEAR.
+
+Try it:
+1. `bun run swarm -- --offline --rounds 5`: see the same market run in memory (no chain, no keys, no LLM), with
+   lots, clearing prices, winners, no-reveal penalties and each agent's net NEAR and tokens.
+2. `bun run swarm -- --rounds 3`: see three full rounds on testnet, about 2 minutes each: sellers list, 20 buyers
+   commit, then reveal, then `clear` and `deliver` settle, with a NearBlocks link for each step. (Needs the parent
+   key in `~/.secrets/near_yeetpad-swarm.testnet.json`; agent keys go in `~/.secrets/swarm-agents.json`.)
+3. Open [yeetpad.fun/swarm](https://yeetpad.fun/swarm/) during a run: see the phase move through Listing → Commit
+   → Reveal → Clear → Settled, then the new round's bids, prices and deliveries appear.
+4. `bun run swarm -- status`: see the latest rounds from chain. `bun run test:swarm` and
+   `cargo test -p swarm-market` run the engine and contract tests (contract tests are named after the RULES.md rule).
+
+How it fits the track:
+- **Sub-accounts:** every agent is its own sub-account of one parent, with its own key, so each listing, commit and
+  reveal on chain traces back to one agent.
+- **Sealed bids:** `sha256("round:lot:buyer:qty:price:salt")` commits, then reveals checked on-chain. Phase deadlines
+  come from block time, so nobody can end a phase early. Not revealing costs 10% of the deposit (paid to the seller).
+- **Clearing:** uniform-price, multi-unit per lot (highest bids first, last winner partly filled, everyone pays the
+  lowest winning price).
+- **Settlement:** the contract holds the tokens and the NEAR, and in `clear` it sends NEAR refunds and seller
+  proceeds; `deliver` then registers each winner on the token and sends its tokens.
+- **Strategies** (`scripts/swarm/engine.ts`): sellers are anchor, adaptive, premium, dumper and scarcity. Buyers are
+  truthful, shader, bargain, momentum, whale, flake (sometimes doesn't reveal) and splitter (bids on two lots).
+  Values are private and seeded, and every buyer deposits its whole budget so the deposit doesn't give away its bid.
+
+Honest limits:
+- **Testnet, and no NEAR Intents.** The Intents verifier only runs on mainnet, so settlement uses direct NEAR and
+  NEP-141 transfers from the contract's escrow (RULES.md explains where Intents would slot in on mainnet).
+- **Scripted agents.** The strategies are simple rules, not learning agents, and all 25 agents are run by one script
+  (`scripts/swarm-sim.ts`). The keys are separate, but it's one operator.
+- **No discovery layer.** Buyers "find each other" by bidding into the same lot; there's no off-chain matchmaking or
+  messaging between agents.
+- **Deposits leak an upper bound.** A commit's deposit is public, so it caps what that buyer can pay. Agents deposit a
+  fixed budget to hide their real bid.
+- **The coordinator triggers settlement.** `clear` and `deliver` can be called by anyone, but in the sim the parent
+  calls them and pays the gas, because 300 Tgas needs about 0.3 NEAR of headroom, more than an agent keeps.
+  Transaction hashes are attached to each round by the owner (`annotate`) for the page; they can't change any
+  amount or outcome.
+- **Small amounts.** Prices are around 0.00001 NEAR per token, so a round moves about 0.03–0.05 NEAR. Test tokens have
+  no value.
+
 ## Deploy contracts (testnet)
 
 ```bash
