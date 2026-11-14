@@ -19,3 +19,6 @@ target/
 .wrangler/
 .dev.vars*
 .scratch/
+
+# local helper scripts (keypair generation writes to ~/.secrets)
+scripts/_*.ts

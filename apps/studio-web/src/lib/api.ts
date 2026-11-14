@@ -50,7 +50,8 @@ export class ApiError extends Error {
   noRetry: boolean;
   constructor(message: string, public status: number, public body: { error?: string; taken?: string[]; [k: string]: unknown }) {
     super(message);
-    this.noRetry = status >= 400 && status < 500 && status !== 408 && status !== 429;
+    // A daily platform-key quota (429 platform_quota) won't clear on retry either.
+    this.noRetry = (status >= 400 && status < 500 && status !== 408 && status !== 429) || body?.code === "platform_quota";
   }
 }
 

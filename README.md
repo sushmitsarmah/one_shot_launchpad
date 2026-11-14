@@ -1,10 +1,208 @@
-# Yeetpad (NEAR testnet)
+# Yeetpad
 
-https://yeetpad.fun · repo, package and Worker names still use `one_shot_launchpad` / `one-shot-launchpad`.
+Yeetpad is a token launchpad on NEAR. You connect a NEAR wallet, prepay a few NEAR as credits, have an LLM write token ideas (name, ticker, tagline, description, colours), edit them, and launch up to 100 NEP-141 tokens in one run. Each token gets its own one-page website, can be listed on Rhea at launch, and is owned entirely by the creator: no fees, no locker, no platform share.
 
-Land → connect a NEAR wallet → deposit NEAR as NEAR AI credits → generate a token/site idea with an LLM → launch a NEP-141 token owned by you. **Testnet only.**
+**Built at NEAR HACKATHON** (https://nearhackathon.com, November 2026). Runs on **NEAR testnet**; mainnet is prepared but not deployed.
+
+| | Link |
+| --- | --- |
+| Landing page | https://yeetpad.fun |
+| App (Studio, My tokens) | https://yeetpad.fun/app/ |
+| Swarm Market (25 agents trading) | https://yeetpad.fun/swarm/ |
+| Autopilot agent ledger | https://yeetpad.fun/agent/yeetpad-autopilot.testnet |
+| Example token page | https://yeetpad.fun/t/neon-paw-arcade-2 |
+| API health | https://one-shot-launchpad-api.sushmitsarmah.workers.dev/api/health |
+| Contracts (testnet) | `ft-factory.osl-launchpad-5786.testnet`, `launch-vault.osl-launchpad-5786.testnet`, `market.yeetpad-swarm.testnet` |
+
+**Tracks targeted:** Memecoins With Mechanics · Open Innovation · Unstoppable DeFi · Autonomous Business · Agent Economy ("Give AI a wallet") · AI Swarms ("Many agents, one economy"). Optional: Real-World Money (Loofta tips).
+
+The testnet app is open to every wallet: no whitelist, no sign-up. The shared AI key has daily per-account and per-IP limits (see [Limits on the shared AI key](#limits-on-the-shared-ai-key)).
+
+Contents: [Walkthroughs](#walkthroughs-do-x-see-y) · [Architecture](#architecture) · [Local setup](#local-setup) · [Tests](#tests) · [Known limits](#known-limits) · [Credits and disclosures](#credits-and-disclosures) · [Reference](#reference)
+
+---
+
+## Walkthroughs (do X, see Y)
+
+Everything below works in a browser on https://yeetpad.fun with a NEAR **testnet** wallet. Nothing costs real money except the two payment widgets in step 9, which are mainnet by design.
+
+### 1. Get a testnet wallet and test NEAR
+
+1. Install [Meteor Wallet](https://meteorwallet.app) (or use [MyNearWallet testnet](https://testnet.mynearwallet.com)), switch it to **Testnet** and create an account, for example `yourname.testnet`.
+2. Get test NEAR from a faucet: https://near-faucet.io, or with [NEAR CLI](https://docs.near.org/tools/near-cli): `near account create-account sponsor-by-faucet-service yourname.testnet autogenerate-new-keypair save-to-keychain network-config testnet create` (gives 10 test NEAR).
+
+See: the wallet shows a testnet balance. About 2 NEAR covers everything below.
+
+### 2. Connect
+
+1. Open https://yeetpad.fun/app/ and click **Connect wallet**. Pick your wallet.
+2. Sign the short "Sign in to Yeetpad" message. It's free and sends no transaction.
+
+See: your account name at the top, the Studio sections **1. Connect** to **4. Yeet it**, and your credit balance (0 at first). Sign-in adds no access key, so signing out needs no transaction.
+
+### 3. Top up credits
+
+1. In **2. Top up credits**, enter an amount (for example `1`) and click **Top up**. Approve the `deposit_credits` call in your wallet.
+
+See: the credit balance updates. Credits live in the vault contract and pay for AI ideas (0.01 NEAR each) and launches (0.076 NEAR per token, plus about 0.02 NEAR per Rhea pool), with no further wallet popups.
+
+### 4. Generate and edit ideas
+
+1. In **3. Generate ideas**, type a theme (for example "sleepy otters with side hustles"), pick how many (1 to 100) and click **Generate**.
+2. In the **Ideas** list, click ✎ on any idea to change its name, ticker, tagline, description or colours. Untick ideas you don't want.
+
+See: ideas arrive in chunks of 5 with a progress counter (`Generated 10/20…`), each charging 0.01 NEAR per idea. Duplicate names and tickers are renamed. Edits are kept; the launch uses exactly what's on screen. Optional: **AI key** lets you save your own Ollama or NEAR AI key (stored encrypted); ideas then cost no credits.
+
+### 5. Batch launch (and list on Rhea)
+
+1. In **4. Yeet it**, set **List on** to **Rhea** (or **None**) and click **Launch N tokens + list on Rhea**.
+
+See: tokens launch in chunks of 5 per vault transaction, with a `Launched x/N` counter and a NearBlocks link per token. With Rhea, each token gets a Rhea DCL pool at the opening price, and the LP position belongs to you. If a launch fails, its credits are refunded on-chain. **Stop after this chunk**, **Resume** and **Retry failed** work mid-run, and the run survives a page reload.
+
+### 6. Token page
+
+1. Click a launched token's **Site** link, or open https://yeetpad.fun/t/neon-paw-arcade-2.
+
+See: a standalone one-page site with the token's name, tagline, colours, icon, contract link and Rhea pool link. It has no Yeetpad navbar or analytics. The URL is a slug of the token name.
+
+### 7. My tokens: delete and pull liquidity
+
+1. Click the **🪙 My tokens** tab.
+2. See every token you launched, with links to the contract, Rhea pool and site, page views, and per-row toggles.
+3. Tick a token and click **Delete**. In the dialog, tick **Also pull my liquidity from Rhea**, keep the default 1% slippage, and confirm.
+
+See: the token page goes offline ("taken down by its creator") and the row is hidden (tick **Show deleted**, then **Restore** to bring it back). With the liquidity pull, your wallet signs `remove_liquidity` on Rhea with minimum amounts from `predict_remove_liquidity`. If the price moved past your slippage, Rhea reverts with `E204: slippage error` and nothing is withdrawn. The token itself stays on-chain. Tokens launched with **List on: None** can be listed later with **List N on Rhea**.
+
+### 8. Bulk settings
+
+1. In My tokens, select several tokens and use the bulk bar to switch **NEAR Intents** or **Loofta** on or off for all of them.
+
+See: the toggles update for every selected token, and the token pages show or hide the widget.
+
+### 9. NEAR Intents and Loofta widgets (mainnet payments)
+
+Both widgets are off by default and always use **mainnet**, even on testnet token pages.
+
+1. **NEAR Intents**: in the Studio, set a mainnet tip account under **NEAR Intents tips** (for example `you.near`), then enable Intents for a token. On its page, open the widget.
+   See: **Tip** quotes a payment in any 1Click-supported asset that arrives at the creator's mainnet account. **Buy** gets a 1Click quote to mainnet wNEAR, then a Rhea swap. On a testnet token the swap step fails, because the token doesn't exist on mainnet (expected).
+2. **Loofta**: in **Loofta payments**, paste your Loofta API key from https://pay.loofta.com (or set an email or handle as the payout), then enable Loofta for a token. On its page, click **Pay with Loofta**.
+   See: a real Loofta checkout opens in a new tab (USD amount, any token or chain, settled to the creator in USDC on Solana). **Paying it moves real money.** The example page https://yeetpad.fun/t/neon-paw-arcade-2 has both enabled.
+
+### 10. Autopilot: an AI agent with its own wallet
+
+The agent `yeetpad-autopilot.testnet` has **no full-access key**, only a function-call key limited to the vault. It spends prepaid credits within rules a human sets in [`agent.config.json`](agent.config.json): launches per run, `maxCreditsPerDayNear` (3), theme, and venue (Rhea).
+
+1. Open https://yeetpad.fun/agent/yeetpad-autopilot.testnet.
+   See: the key badge ("function-call key only, vault only"), credits, rules, kill switch, today's spend against the cap, and every past run with token pages, NearBlocks and Rhea links.
+2. With the agent key (repo owner only): `bun run autopilot`.
+   See: it signs in with the limited key, generates 3 ideas, drops duplicates, launches them, lists them on Rhea in about 40 s, and appends a run to the ledger.
+3. Admin: `bun run agent:kill on yeetpad-autopilot.testnet demo`, then `bun run autopilot`.
+   See: the run stops and is recorded as `stopped`. With `SKIP_PRECHECK=1` the API itself refuses (423). `bun run agent:kill off` resumes it.
+4. Set `maxCreditsPerDayNear` below today's spend, then run `bun run autopilot -- --publish-only` and `bun run autopilot`.
+   See: it stops on the daily cap. The server also enforces `min(rules, AGENT_MAX_DAILY_NEAR)` and answers 429.
+
+Without the key, steps 2–4 can be checked in code and tests: `scripts/autopilot.ts`, `apps/orchestrator-api/src/agent.ts`, `src/agent.test.ts`.
+
+### 11. Swarm Market: 25 agents, one economy
+
+Five seller agents auction lots of their own Yeetpad tokens to 20 buyer agents in sealed-bid (commit/reveal), uniform-price rounds, run by the `market.yeetpad-swarm.testnet` contract. The rules are in [`RULES.md`](RULES.md).
+
+1. Anyone, no keys: `bun install && bun run swarm -- --offline --rounds 5`.
+   See: five rounds in memory, with lots, sealed commits, reveals, clearing prices, winners, no-reveal penalties and each agent's net NEAR and tokens.
+2. Open https://yeetpad.fun/swarm/.
+   See: the settled testnet rounds read live from the contract: phases, commit hashes, reveals, clearing prices, refunds, deliveries, a price chart, each agent's balance, and transaction links.
+3. With the parent key (repo owner only): `bun run swarm -- --rounds 3`.
+   See: three on-chain rounds of about 2 minutes each (list → commit → reveal → clear → deliver), and the /swarm page moving through the phases.
+4. `bun run swarm -- status` shows the latest rounds from chain. Tests: `bun run test:swarm`, `cargo test -p swarm-market`.
+
+---
 
 ## Architecture
+
+```
+ browser: apps/studio-web (Astro static + React island, wallet-selector)
+   │  NEP-413 sign-in, deposit_credits (wallet), Rhea remove_liquidity (wallet)
+   ▼
+ apps/orchestrator-api (Hono on a Cloudflare Worker; KV for sites, keys, quotas, ledger)
+   │  LLM (Ollama / NEAR AI, OpenAI-compatible)      NEAR Intents 1Click, Loofta (mainnet)
+   │  relayer key → vault calls
+   ▼
+ NEAR testnet
+   near-launch-vault  credits, AI fee, sponsored (batch) launches, per-item refunds
+   near-ft-factory    creates <ticker>.<factory> NEP-141 tokens from a global contract
+   Rhea DCL           pool + LP position per token (optional)
+   swarm-market       sealed-bid auctions between agent sub-accounts
+```
+
+Repository layout:
+
+```
+apps/studio-web/         landing (/), Studio (/app/), token pages (/t/<slug>), /agent/<account>, /swarm/
+apps/orchestrator-api/   API (Bun locally, Cloudflare Worker in production)
+packages/schema/         zod schemas and shared types (@osl/schema)
+contracts/               near-ft-token, near-ft-factory, near-launch-vault, swarm-market, integration-tests
+scripts/                 deploy, autopilot, swarm simulator, e2e and headless checks
+docs/                    venue research, Rhea listing plan, mainnet deploy runbook
+agent.config.json        the Autopilot's human-set rules
+RULES.md                 Swarm Market rules
+```
+
+Detailed architecture, contract API, auth, access gate, AI keys, payments, Autopilot and Swarm internals are in [Reference](#reference) below.
+
+## Local setup
+
+Requirements: [Bun](https://bun.sh) ≥ 1.2; for contracts, Rust ≥ 1.93 with `wasm32-unknown-unknown` and [`cargo-near`](https://github.com/near/cargo-near); on Linux, `pkg-config` and `libssl-dev` for the integration tests.
+
+```bash
+bun install
+cp apps/orchestrator-api/.env.example apps/orchestrator-api/.env   # LLM_MOCK=1, NEAR_MOCK=1: no keys, no chain
+bun run dev:api                                                    # http://localhost:8787
+cp apps/studio-web/.env.example apps/studio-web/.env
+bun run dev:web                                                    # http://localhost:4321 (/app/ is the Studio)
+```
+
+`curl -s localhost:8787/api/health` should answer `{"ok":true,...}`. In mock mode, generation returns deterministic ideas and launches use an in-memory ledger. To use testnet and a real LLM, set the variables in [Environment variables](#environment-variables).
+
+## Tests
+
+No keys or network are needed, except where noted.
+
+```bash
+bun run typecheck                 # API, web, scripts
+bun run test:api                  # API (mock mode): auth, gate, quotas, generate/launch, venues, AI keys, Intents, Loofta, agent
+bun run test:web                  # web helpers and the frontend Worker
+bun run test:swarm                # swarm engine (clearing, strategies)
+cargo test --workspace            # contract unit tests (token, factory, vault, swarm-market)
+bun run contracts:build && (cd contracts/integration-tests && cargo test)   # near-workspaces sandbox (downloads near-sandbox once)
+bun run test                      # test:api + both cargo suites
+```
+
+Live checks against testnet (need keys in `~/.secrets`): `bun run regression:testnet`, `scripts/e2e-*.ts`, `scripts/headless-*.ts`.
+
+## Known limits
+
+* **Buy errors on testnet tokens.** The NEAR Intents and Loofta widgets always use mainnet. A testnet token doesn't exist on mainnet, so the Buy swap step fails with the normal error. Tips work.
+* **Loofta links are real.** Loofta has no test mode: every "Pay with Loofta" click creates a real checkout link, and paying it moves real USDC.
+* **Mainnet isn't deployed.** The contracts, Worker config and runbook (`docs/mainnet-deploy.md`) are ready, but the live app is testnet only. Nearly and JustHoot listings are disabled on testnet.
+* **No NEAR Intents settlement in the Swarm on testnet.** The Intents verifier is mainnet only, so the market settles with direct NEAR and NEP-141 transfers from the contract's escrow. The agents use scripted strategies, and one script runs all 25.
+* **The Autopilot spends but doesn't earn.** There are no trading fees to collect on testnet, so it runs until its credits or daily cap run out, and it runs on demand rather than on a cron.
+* **Sessions are stateless.** A session can't be revoked before it expires (24 h) except by rotating `SESSION_SECRET`.
+* **Shared-key limits.** Generation with the shared platform key is capped per account and per IP per day; with your own AI key there is no cap.
+* **Sign-in needs a full-access key**, which ordinary wallets have. Only admin-listed agent accounts may sign in with a function-call key.
+
+## Credits and disclosures
+
+* **Libraries:** [near-sdk-rs](https://github.com/near/near-sdk-rs) and near-contract-standards 5.29, [near-workspaces](https://github.com/near/near-workspaces-rs), [near-api-js](https://github.com/near/near-api-js), [NEAR Wallet Selector](https://github.com/near/wallet-selector) (Meteor, MyNearWallet, HERE, Intear), [Hono](https://hono.dev), [zod](https://zod.dev), the [openai](https://github.com/openai/openai-node) client (OpenAI-compatible calls to Ollama / NEAR AI), [Astro](https://astro.build), [React](https://react.dev), qrcode-generator, vite-plugin-node-polyfills, [Bun](https://bun.sh), [Wrangler](https://developers.cloudflare.com/workers/wrangler/) / Cloudflare Workers and KV.
+* **External services:** Rhea Finance DCL, NEAR Intents 1Click API, Loofta, Ollama Cloud / NEAR AI Cloud, FastNEAR RPC, NearBlocks.
+* **AI-assisted code:** most of the code, tests and docs in this repository were written with AI coding agents, under the direction and review of the author (commits by `codeybot` / `codeybot-labs`). Token ideas in the app are generated by an LLM at runtime.
+* **Pre-existing code:** none. The git history starts on 21 Oct 2026. The project started as omni-launch-factory / one_shot_launchpad (hence the repo, package and Worker names) and was built during the hackathon.
+* **License:** [MIT](LICENSE), © 2026 Sushmit Sarmah / MonolithLabs.
+
+---
+
+# Reference
+
+## Architecture details
 
 ```
  browser (Astro static + React island)                 NEAR testnet
@@ -136,6 +334,8 @@ Routes in the web app: `/` is the landing page, `/app/` is the studio (wallet co
 | `AUTH_RECIPIENT` | `VAULT_CONTRACT` | NEP-413 `recipient` the sign-in must be addressed to (the web app uses the vault id) |
 | `LOCKED` | **on** | access gate; `0`/`false` opens the app to every account (see [Access gate](#access-gate-whitelist)) |
 | `ALLOWED_ACCOUNTS` | empty | comma-separated NEAR account ids allowed in while `LOCKED` |
+| `PLATFORM_IDEAS_PER_ACCOUNT_DAY` / `PLATFORM_IDEAS_PER_IP_DAY` | `150` / `400` | daily caps on ideas generated with the shared platform key ([Limits on the shared AI key](#limits-on-the-shared-ai-key)); `0` = no cap |
+| `AGENT_ACCOUNTS` / `AGENT_MAX_DAILY_NEAR` | empty / `2` (testnet: `3`) | Autopilot agents and the server ceiling on their daily spend |
 | `ONECLICK_BASE_URL` / `ONECLICK_JWT` | `https://1click.chaindefuser.com` / – | NEAR Intents widget; the JWT (secret) is optional and only removes 1Click's unauthenticated fee |
 | `LOOFTA_API_BASE` / `LOOFTA_PAY_BASE` | `https://api.loofta.com` / `https://pay.loofta.com` | Loofta widget. No platform key: creators bring their own (see [Token page payments](#token-page-payments-near-intents--loofta)) |
 
@@ -168,7 +368,7 @@ Tests: `src/auth.test.ts` (signatures built with near-api-js's own NEP-413 signe
 
 ## Access gate (whitelist)
 
-The app is **locked** (`LOCKED=1`, the default). The allowlist is the union of
+**Testnet is currently open (`LOCKED=0`) for hackathon judging**; mainnet stays locked. When locked (`LOCKED=1`, the code default), the allowlist is the union of
 **KV `allow:<account>`** (`{approvedAt, approvedBy}`, written when an admin approves; no redeploy),
 **`ALLOWED_ACCOUNTS`** (env var, bootstrap/fallback, currently empty) and **`ADMIN_ACCOUNTS`** (env var; admins are implicitly allowed).
 
@@ -187,7 +387,7 @@ The app is **locked** (`LOCKED=1`, the default). The allowlist is the union of
 bun run admin your-wallet.testnet && bun run deploy:api
 ```
 
-`bun run admin --list` shows admins, `bun run admin --remove x.testnet && bun run deploy:api` removes one. Admins are set by the `ADMIN_ACCOUNTS` var (currently `osl-e2e-mvhxupmb.testnet`), not KV, so a leaked admin session can't create more admins.
+`bun run admin --list` shows admins, `bun run admin --remove x.testnet && bun run deploy:api` removes one. Admins are set by the `ADMIN_ACCOUNTS` var (testnet: `osl-e2e-mvhxupmb.testnet`, `sillypuma1184.testnet`; mainnet: `sillypuma1184.near`), not KV, so a leaked admin session can't create more admins.
 
 **Day to day:** sign in at `/app/` with an admin wallet → an **🛡️ Admin** tab appears (hidden for everyone else; direct link `/app/#admin`). It lists waitlist requests with counts and Pending / Approved / Revoked / All filters, search, per-row **Approve** / **Revoke** / **Remove**, checkboxes with select-all and bulk actions, plus "Who's allowed in" (KV approvals, env and admin accounts) with a box to approve any account directly.
 
@@ -232,8 +432,22 @@ The format fallback is json_schema → json_object → no `response_format` (onl
 * **Admin → Platform AI key** (ADMIN_ACCOUNTS only, checked server-side): same form; stored as `llmkey:__platform__`, takes precedence over the `NEARAI_API_KEY` secret (the fallback, also used if the stored key stops validating).
 * **Storage**: KV `llmkey:<account>` = `{v, kv (master key version), provider, model, iv, ct, createdAt, updatedAt, valid, validatedAt, lastError}`. `ct` is AES-256-GCM (WebCrypto) under `KEY_ENCRYPTION_KEY`, random 12-byte IV per record, AAD `yeetpad-llmkey|v1|<account>|<provider>`. Only ciphertext touches storage; even the last 4 characters are derived by decrypting.
 * **Write-only**: no endpoint returns a key (only provider, model, last 4, dates, validity). Provider error text is dropped (it can echo the key); `llm_usage` logs carry source/provider/model/token counts only.
-* **Limits**: 10 key saves/tests and 30 model lists per account per hour; keys are whitespace-stripped, 8-512 printable ASCII characters.
+* **Limits**: idea caps on the shared key are described in [Limits on the shared AI key](#limits-on-the-shared-ai-key); 10 key saves/tests and 30 model lists per account per hour; keys are whitespace-stripped, 8-512 printable ASCII characters.
 * Endpoints: `GET /api/llm/providers`; session: `GET|PUT|DELETE /api/llm/key`, `POST /api/llm/key/test`, `POST /api/llm/models`; admin: `GET|PUT|DELETE /api/admin/llm-key`, `POST /api/admin/llm-key/test`, `POST /api/admin/llm-models`. Tests: `src/llmkeys.test.ts`.
+
+## Limits on the shared AI key
+
+With `LOCKED=0` anyone can sign in, and test NEAR is free, so idea generation with the **platform** key (the admin-set key, or the `NEARAI_API_KEY` secret) has daily caps, in `apps/orchestrator-api/src/quota.ts`:
+
+| var | testnet value | |
+|---|---|---|
+| `PLATFORM_IDEAS_PER_ACCOUNT_DAY` | `150` | ideas per account per UTC day (one 100-token run plus regenerations) |
+| `PLATFORM_IDEAS_PER_IP_DAY` | `400` | ideas per client IP per UTC day (IPv6 per /64), so fresh wallets from one machine don't multiply the account cap |
+
+* Counted in ideas (`count`), before the LLM call; a refused request counts nothing and charges nothing. Over the cap the API answers **429** `{code: "platform_quota", scope: "account" | "ip", limit, used}` and the Studio stops the run without retrying.
+* **Exempt:** admins (`ADMIN_ACCOUNTS`) and Autopilot agents (they have their own server-enforced daily spend cap). Requests that use the caller's **own** AI key never touch these counters. The 0.01 NEAR credit charge per idea is unchanged.
+* `0` disables a cap. KV counters (`aiq:a:<account>:<day>`, `aiq:i:<ip>:<day>`) are soft: not atomic, so a burst of parallel requests can overshoot slightly.
+* Tests: `src/quota.test.ts`.
 
 ## Token page payments: NEAR Intents + Loofta
 
@@ -365,9 +579,9 @@ bun run deploy:factory                 # creates/deploys/inits ft-factory.<you>.
 bun run deploy:vault                   # creates/deploys/inits launch-vault.<you>.testnet with relayer + factory
 ```
 
-Upgrade in place (keeps state and addresses; runs `migrate`): `bun run contracts:upgrade`. Testnet is on v0.2.0.
+Upgrade in place (keeps state and addresses; runs `migrate`): `bun run contracts:upgrade`.
 
-Sub-accounts are created with the parent's public key. Re-running redeploys code (state kept) and, for the vault, ensures the relayer is registered. Each token launch needs roughly 1.8 NEAR of storage (see factory `get_required_deposit`), so users should top up ~2+ NEAR.
+Sub-accounts are created with the parent's public key. Re-running redeploys code (state kept) and, for the vault, ensures the relayer is registered. The token code is a global contract, so each launch needs about 0.076 NEAR (factory `get_required_deposit`).
 
 ## Cloudflare deploy
 
@@ -406,9 +620,3 @@ Wrangler is pinned to 4.86.0 because newer 4.x releases need Node 22 (the box ha
 Token sites need the KV namespace (`wrangler kv namespace create yeetpad-sites`; its id is in `kv_namespaces` in `apps/orchestrator-api/wrangler.jsonc`). The API token needs **Workers KV Storage: Edit** for that one-time create; `SITE_BASE` sets the public site URL (`https://yeetpad.fun`). Outside Workers (Bun dev, tests) an in-memory store is used.
 
 A token with **Account > Workers Scripts: Edit** is enough (set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). The API is not deployed by Workers Builds; redeploy it with the command above after API changes. Keep `CORS_ORIGINS` in `vars` in sync with the frontend origins (currently `https://yeetpad.fun`, `https://www.yeetpad.fun`, the workers.dev URL and `http://localhost:4321`). The NEP-413 recipient is the vault id, not the origin, so adding a domain needs no auth change.
-
-## Known limitations / later
-
-* **Sessions are stateless**: a token can't be revoked before it expires (24h) except by rotating `SESSION_SECRET`. The nonce replay cache is per Worker isolate; the 10-minute freshness window is the main replay guard.
-* Custom domains and the Solana path are out of scope here.
-* **Liquidity (mainnet note)**: `buyUrl` points at the token's nearblocks page; there is no testnet DEX route. NEAR Intents / 1Click has no testnet deployment (per its docs) and Shore is mainnet-only. Meme.Cooking has a testnet factory (`factory.v10.meme-cooking.testnet`), but it mints its own token through an auction that its operator finalizes; it can't add liquidity to a token from our factory. On mainnet the path is: launch, then create a Rhea (Ref) pool or hand off to Shore/Meme.Cooking, and quote buys via 1Click.

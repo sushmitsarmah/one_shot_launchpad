@@ -1,5 +1,6 @@
 // Yeetpad Autopilot: one autonomous loop (README "Autopilot agent").
 //   bun run autopilot                 # uses ./agent.config.json
+//   bun run autopilot -- --publish-only   # only republish the rules (cap etc.), no run
 // The agent signs in with its own function-call key (limited to the vault; it has no full-access key), publishes
 // its human-set rules, checks the admin kill switch and its daily cap, generates ideas, drops duplicate/bad/taken
 // tickers, launches them from its prepaid vault credits (optionally listing on Rhea, also credit-paid, no wallet
@@ -97,6 +98,11 @@ async function finish(status: "ok" | "partial" | "failed" | "stopped", reason: s
 const { account: _a, keyFile: _k, ...rules } = cfg;
 await call("PUT", "/api/agent/config", rules);
 const st = await call("GET", "/api/agent/status");
+// `bun run autopilot -- --publish-only`: republish agent.config.json and print the effective cap, launch nothing.
+if (process.argv.includes("--publish-only")) {
+  log(`published rules; cap ${fmt(BigInt(st.capYocto))} NEAR/day, spent ${fmt(BigInt(st.spentTodayYocto))} today, paused=${!!st.paused}`);
+  process.exit(0);
+}
 // SKIP_PRECHECK=1 skips the client-side kill/cap checks to show the server enforces them too.
 const PRE = process.env.SKIP_PRECHECK !== "1";
 if (PRE && st.paused) await finish("stopped", `kill switch on${st.kill?.reason ? `: ${st.kill.reason}` : ""}`);

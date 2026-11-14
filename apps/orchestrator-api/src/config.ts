@@ -118,6 +118,9 @@ export function buildConfig(src: EnvSource = {}) {
     agentAccounts: list(env("AGENT_ACCOUNTS", "")),
     /** Server-side hard ceiling on an agent's daily spend (NEAR), whatever its own config says. */
     agentMaxDailyNear: Number(env("AGENT_MAX_DAILY_NEAR", "2")),
+    /** Daily caps on ideas generated with the platform AI key (src/quota.ts). 0 = no cap. Own-key requests are uncapped. */
+    platformIdeasPerAccountDay: Number(env("PLATFORM_IDEAS_PER_ACCOUNT_DAY", "150")) || 0,
+    platformIdeasPerIpDay: Number(env("PLATFORM_IDEAS_PER_IP_DAY", "400")) || 0,
   };
 }
 

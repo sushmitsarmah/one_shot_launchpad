@@ -3,7 +3,7 @@
   "account": "yeetpad-autopilot.testnet",
   "keyFile": "~/.secrets/near_yeetpad-autopilot.testnet.json",
   "launchesPerRun": 3,
-  "maxCreditsPerDayNear": 1.2,
+  "maxCreditsPerDayNear": 3,
   "theme": "absurd but wholesome animal side-hustles, one punchy idea each",
   "listOn": "rhea",
   "rhea": { "openingFdvNear": 1000 },

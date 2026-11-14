@@ -56,6 +56,7 @@ import { buildListParams, computePoints, listingCost, poolIdFor, rheaPoolUrl } f
 import { config } from "./config";
 import { DEPOSIT_ADDRESS_RE, intentsForPage, intentsPageState, intentsPayKey, oneClickQuote, oneClickStatus, oneClickTokens, planQuote, shapeQuote, tipRecipient } from "./intents";
 import { LLMCallError, envTarget, generateIdeas, type LLMTarget } from "./llm";
+import { quotaMessage, takeIdeaQuota } from "./quota";
 import {
   KEY_RATE_LIMIT,
   KeyError,
@@ -350,6 +351,11 @@ app.post("/api/generate", requireSession, requireAllowed, async (c) => {
     return c.json({ error: `insufficient vault balance: need ${formatNear(cost)} NEAR for ${count} idea(s), have ${formatNear(bal)}` }, 402);
   }
 
+  // Shared platform key: per-account and per-IP daily idea caps (admins and agents exempt). See src/quota.ts.
+  if (!isAdmin(ownerWallet, config) && !(await isAgentAccount(ownerWallet, config, kvStore()))) {
+    const q = await takeIdeaQuota(kvStore(), ownerWallet, clientIp(c), count, config);
+    if (!q.ok) return c.json({ error: quotaMessage(q), code: "platform_quota", scope: q.scope, limit: q.limit, used: q.used }, 429);
+  }
   const target = config.llmMock ? undefined : await platformTarget();
   const ideas = await generateIdeas(prompt, count, avoid, body.data.seq, target);
   // Charge only after valid ideas were produced (one charge for the whole set).
@@ -358,6 +364,10 @@ app.post("/api/generate", requireSession, requireAllowed, async (c) => {
   const res: GenerateResponse = { idea: ideas[0], ideas, charged: cost.toString(), txHash, keySource: target?.source ?? "env", provider: target?.provider ?? null, model: target?.model ?? config.nearAiModel };
   return c.json(res);
 });
+
+function clientIp(c: { req: { header(name: string): string | undefined } }) {
+  return c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
 
 /** Platform LLM: the admin-set stored key when present and valid, else the NEARAI_* env fallback. */
 async function platformTarget(): Promise<LLMTarget> {
