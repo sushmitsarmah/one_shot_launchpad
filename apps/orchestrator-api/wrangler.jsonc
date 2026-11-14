@@ -28,6 +28,10 @@
     "LOCKED": "1",
     "ALLOWED_ACCOUNTS": "",
     "ADMIN_ACCOUNTS": "osl-e2e-mvhxupmb.testnet,sillypuma1184.testnet",
+    // Autopilot agents (README "Autopilot agent"): may sign in with a function-call key limited to the vault.
+    // More can be added by admins at runtime (POST /api/admin/agents). Server ceiling on an agent's daily spend:
+    "AGENT_ACCOUNTS": "yeetpad-autopilot.testnet",
+    "AGENT_MAX_DAILY_NEAR": "2",
     "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad.sushmitsarmah.workers.dev,http://localhost:4321"
   },
   // ---- Mainnet: `bun run deploy:api:mainnet` (worker one-shot-launchpad-api-mainnet). Not deployed yet. ----
@@ -66,6 +70,8 @@
         "ALLOWED_ACCOUNTS": "",
         // Add your own mainnet wallet here before deploying.
         "ADMIN_ACCOUNTS": "sillypuma1184.near",
+        "AGENT_ACCOUNTS": "",
+        "AGENT_MAX_DAILY_NEAR": "2",
         "CORS_ORIGINS": "https://yeetpad.fun,https://www.yeetpad.fun,https://one-shot-launchpad-mainnet.sushmitsarmah.workers.dev,http://localhost:4321"
       }
     }

@@ -138,7 +138,25 @@ import {
   revokeAccounts,
   takeRateLimit,
 } from "./gate";
-import { AuthError, consumeNonceInMemory, issueSession, verifySession, verifySignIn } from "./auth";
+import { AuthError, agentKeyAllowed, consumeNonceInMemory, issueSession, verifySession, verifySignIn } from "./auth";
+import {
+  AgentRules,
+  LedgerEntry,
+  addSpend,
+  appendLedger,
+  assertAgentBudget,
+  assertAgentRunning,
+  dailyCap,
+  getKill,
+  getRules,
+  isAgentAccount,
+  listAgents,
+  putRules,
+  readLedger,
+  setAgent,
+  setKill,
+  spentToday,
+} from "./agent";
 import {
   deductAiCompute,
   executeSponsoredLaunch,
@@ -148,6 +166,8 @@ import {
   getTokensByOwner,
   getVaultBalance,
   isFullAccessKey,
+  getKeyPermission,
+  listAccessKeys,
   isTickerTaken,
   type TokenArgs,
   type TokenRecord,
@@ -242,6 +262,8 @@ app.post("/api/auth/session", async (c) => {
     recipient: config.authRecipient,
     // In NEAR_MOCK mode there is no chain to ask; the signature itself is still verified.
     isFullAccessKey: config.nearMock ? undefined : isFullAccessKey,
+    // Autopilot agents only: a vault-limited function-call key on an admin-listed agent account.
+    isAgentKey: config.nearMock ? undefined : async (acc, pk) => agentKeyAllowed(await getKeyPermission(acc, pk), { vaultContract: config.vaultContract, isAgent: await isAgentAccount(acc, config, kvStore()) }),
     consumeNonce: (n, exp) => consumeNonceInMemory(n, exp),
   });
   // Checked after the signature, so the allowlist can't be probed without the account's key.
@@ -260,6 +282,8 @@ const requireSession = createMiddleware<Env>(async (c, next) => {
 /** While locked, only allowlisted accounts pass (rejects older sessions of non-allowlisted accounts). */
 const requireAllowed = createMiddleware<Env>(async (c, next) => {
   await assertAllowed(c.var.account, config, kvStore());
+  // Autopilot agents: the admin kill switch blocks every gated endpoint (no-op for everyone else).
+  await assertAgentRunning(c.var.account, config, kvStore());
   await next();
 });
 
@@ -320,6 +344,7 @@ app.post("/api/generate", requireSession, requireAllowed, async (c) => {
     return c.json(res);
   }
 
+  await assertAgentBudget(ownerWallet, cost, config, kvStore());
   const bal = await getVaultBalance(ownerWallet);
   if (bal < cost) {
     return c.json({ error: `insufficient vault balance: need ${formatNear(cost)} NEAR for ${count} idea(s), have ${formatNear(bal)}` }, 402);
@@ -329,6 +354,7 @@ app.post("/api/generate", requireSession, requireAllowed, async (c) => {
   const ideas = await generateIdeas(prompt, count, avoid, body.data.seq, target);
   // Charge only after valid ideas were produced (one charge for the whole set).
   const txHash = cost > 0n ? await deductAiCompute(ownerWallet, cost) : null;
+  if (txHash) await recordAgentSpend(ownerWallet, cost);
   const res: GenerateResponse = { idea: ideas[0], ideas, charged: cost.toString(), txHash, keySource: target?.source ?? "env", provider: target?.provider ?? null, model: target?.model ?? config.nearAiModel };
   return c.json(res);
 });
@@ -356,6 +382,7 @@ app.post("/api/launch", requireSession, requireAllowed, async (c) => {
   const rhea = body.data.listOn === "rhea";
   const deposit = await getRequiredLaunchDeposit();
   const listFee = rhea ? listingCost(await creatorDclStorageNeeded(ownerWallet)) : 0n;
+  await assertAgentBudget(ownerWallet, deposit + listFee, config, kvStore());
   const bal = await getVaultBalance(ownerWallet);
   if (bal < deposit + listFee) {
     return c.json({ error: `insufficient vault balance: launch${rhea ? " + Rhea listing" : ""} needs ~${formatNear(deposit + listFee)} NEAR, have ${formatNear(bal)}` }, 402);
@@ -368,6 +395,7 @@ app.post("/api/launch", requireSession, requireAllowed, async (c) => {
   }
 
   const listing = rhea ? await listRhea(ownerWallet, tokenId, body.data.rhea) : null;
+  await recordAgentSpendSince(ownerWallet, bal);
   const siteConfig = await putSite(withBuyUrl(buildSiteConfig(ownerWallet, idea, tokenId, { txHash, icon }), listing));
   const res: LaunchResponse = {
     tokenId,
@@ -449,9 +477,11 @@ app.post("/api/list/rhea", requireSession, requireAllowed, async (c) => {
   if (held.listing) return c.json({ error: "listing already in progress" }, 409);
   const exists = (await getDclPoolPoint(poolIdFor(tokenId))) !== null;
   const cost = listingCost(await creatorDclStorageNeeded(c.var.account), exists);
+  await assertAgentBudget(c.var.account, cost, config, kvStore());
   const bal = await getVaultBalance(c.var.account);
   if (bal < cost) return c.json({ error: `insufficient vault balance: listing needs ~${formatNear(cost)} NEAR, have ${formatNear(bal)}` }, 402);
   const listing = await listRhea(c.var.account, tokenId, body?.rhea);
+  await recordAgentSpendSince(c.var.account, bal);
   const ticker = tokenId.split(".")[0];
   const found = await findSite(ticker);
   if (found && listing.ok) await saveSite(found.ticker, withBuyUrl(found.site, listing));
@@ -477,6 +507,7 @@ app.post("/api/launch/batch", requireSession, requireAllowed, async (c) => {
   const firstList = rhea ? listingCost(await creatorDclStorageNeeded(ownerWallet)) : 0n;
   const nextList = rhea ? listingCost(0n) : 0n;
   const need = deposit * BigInt(ideas.length) + (rhea ? firstList + nextList * BigInt(ideas.length - 1) : 0n);
+  await assertAgentBudget(ownerWallet, need, config, kvStore());
   const bal = await getVaultBalance(ownerWallet);
   if (bal < need) {
     return c.json({ error: `insufficient vault balance: ${ideas.length} launch(es)${rhea ? " + Rhea listings" : ""} need ~${formatNear(need)} NEAR, have ${formatNear(bal)}` }, 402);
@@ -499,6 +530,7 @@ app.post("/api/launch/batch", requireSession, requireAllowed, async (c) => {
       out.push({ ticker: r.ticker, ok: false, tokenId: null, slug: null, siteUrl: null, error: "launch failed on-chain; that item was refunded" });
     }
   }
+  await recordAgentSpendSince(ownerWallet, bal);
   const res: BatchLaunchResponse = { txHash, explorerUrl: `${config.explorerBase}/txns/${txHash}`, results: out };
   return c.json(res, out.some((r) => r.ok) ? 200 : 502);
 });
@@ -849,6 +881,89 @@ app.post("/api/tokens/intents", requireSession, requireAllowed, async (c) => {
  * Join the waitlist. Public, idempotent, soft rate-limited per IP. Stored as `waitlist:<account>` in the
  * SITES KV namespace; there is deliberately no listing endpoint (read it with `wrangler kv key list`).
  */
+// ---------- Autopilot agents (README "Autopilot agent") ----------
+/** Adds to the agent's server-side daily spend counter (no-op for normal users). */
+async function recordAgentSpend(account: string, yocto: bigint) {
+  if (await isAgentAccount(account, config, kvStore())) await addSpend(kvStore(), account, yocto);
+}
+/** Records what the vault balance dropped by since `before` (launch deposits + listing costs, minus refunds). */
+async function recordAgentSpendSince(account: string, before: bigint) {
+  if (!(await isAgentAccount(account, config, kvStore()))) return;
+  const after = await getVaultBalance(account).catch(() => before);
+  if (before > after) await addSpend(kvStore(), account, before - after);
+}
+/** Only the agent's own session may write its rules and ledger. */
+const requireAgentSelf = createMiddleware<Env>(async (c, next) => {
+  if (!(await isAgentAccount(c.var.account, config, kvStore()))) throw new AuthError("agents only", 403, "not_agent");
+  await next();
+});
+app.put("/api/agent/config", requireSession, requireAgentSelf, async (c) => {
+  const body = AgentRules.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid rules", issues: body.error.issues }, 400);
+  await putRules(kvStore(), c.var.account, body.data);
+  return c.json({ ok: true, rules: body.data, capYocto: (await dailyCap(kvStore(), c.var.account, config)).toString() });
+});
+app.post("/api/agent/ledger", requireSession, requireAgentSelf, async (c) => {
+  const text = await c.req.text();
+  if (text.length > 64 * 1024) return c.json({ error: "ledger entry too large" }, 413);
+  let json: unknown = null;
+  try {
+    json = JSON.parse(text);
+  } catch {}
+  const body = LedgerEntry.safeParse(json);
+  if (!body.success) return c.json({ error: "invalid ledger entry", issues: body.error.issues }, 400);
+  const n = await appendLedger(kvStore(), c.var.account, body.data);
+  return c.json({ ok: true, runs: n });
+});
+/** Agent status for the agent itself (kill switch + budget) before it spends anything. */
+app.get("/api/agent/status", requireSession, requireAgentSelf, async (c) => {
+  const kv = kvStore();
+  const [kill, spent, cap] = await Promise.all([getKill(kv, c.var.account), spentToday(kv, c.var.account), dailyCap(kv, c.var.account, config)]);
+  return c.json({ account: c.var.account, paused: kill.paused, kill, spentTodayYocto: spent.toString(), capYocto: cap.toString() });
+});
+/** Public: the agent's identity, key types, credits, rules, kill switch, today's spend and its run ledger. */
+app.get("/api/agent/:account", async (c) => {
+  const account = NearAccountId.safeParse(c.req.param("account"));
+  if (!account.success) return c.json({ error: "invalid account id" }, 400);
+  const a = account.data.toLowerCase();
+  const kv = kvStore();
+  const isAgent = await isAgentAccount(a, config, kv);
+  const [keys, credits, rules, kill, spent, cap, runs] = await Promise.all([
+    listAccessKeys(a),
+    getVaultBalance(a).catch(() => 0n),
+    getRules(kv, a),
+    getKill(kv, a),
+    spentToday(kv, a),
+    dailyCap(kv, a, config),
+    readLedger(kv, a),
+  ]);
+  const fullAccessKeys = keys.filter((k) => k.permission === "FullAccess").length;
+  return c.json({
+    account: a,
+    isAgent,
+    network: config.networkId,
+    vault: config.vaultContract,
+    explorerBase: config.explorerBase,
+    keys: keys.map((k) => ({
+      publicKey: k.publicKey,
+      type: k.permission === "FullAccess" ? "full_access" : "function_call",
+      receiver: k.permission && k.permission !== "FullAccess" ? k.permission.FunctionCall.receiver_id : null,
+      methods: k.permission && k.permission !== "FullAccess" ? k.permission.FunctionCall.method_names : null,
+      allowance: k.permission && k.permission !== "FullAccess" ? (k.permission.FunctionCall.allowance ?? null) : null,
+    })),
+    fullAccessKeys,
+    vaultOnly: keys.length > 0 && fullAccessKeys === 0 && keys.every((k) => k.permission !== "FullAccess" && k.permission?.FunctionCall.receiver_id === config.vaultContract),
+    credits: credits.toString(),
+    creditsNear: formatNear(credits),
+    rules,
+    kill,
+    spentTodayYocto: spent.toString(),
+    capYocto: cap.toString(),
+    serverMaxDailyNear: config.agentMaxDailyNear,
+    runs,
+  });
+});
+
 app.post("/api/whitelist", async (c) => {
   const len = Number(c.req.header("content-length") ?? 0);
   if (len > WAITLIST_MAX_BODY) return c.json({ error: "request too large" }, 413);
@@ -880,6 +995,26 @@ app.get("/api/admin/waitlist", async (c) => {
 
 /** Everyone who can get in: admins, ALLOWED_ACCOUNTS and KV approvals. */
 app.get("/api/admin/allowed", async (c) => c.json(await listAllowed(kvStore(), config)));
+
+// Autopilot agents: register/unregister an agent account and flip its kill switch (admins only).
+app.get("/api/admin/agents", async (c) => {
+  const agents = await listAgents(kvStore(), config);
+  return c.json({ agents: await Promise.all(agents.map(async (a) => ({ account: a, env: config.agentAccounts.includes(a), kill: await getKill(kvStore(), a) }))) });
+});
+app.post("/api/admin/agents", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { account?: string; enabled?: boolean } | null;
+  const acc = NearAccountId.safeParse(body?.account);
+  if (!acc.success || typeof body?.enabled !== "boolean") return c.json({ error: "body: { account, enabled: boolean }" }, 400);
+  await setAgent(kvStore(), acc.data, body.enabled, c.var.account);
+  return c.json({ ok: true, account: acc.data.toLowerCase(), enabled: body.enabled });
+});
+app.post("/api/admin/agent/kill", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { account?: string; paused?: boolean; reason?: string } | null;
+  const acc = NearAccountId.safeParse(body?.account);
+  if (!acc.success || typeof body?.paused !== "boolean") return c.json({ error: "body: { account, paused: boolean, reason? }" }, 400);
+  const reason = typeof body.reason === "string" ? body.reason.slice(0, 200) : null;
+  return c.json({ ok: true, account: acc.data.toLowerCase(), kill: await setKill(kvStore(), acc.data, body.paused, c.var.account, reason) });
+});
 
 const adminBody = async (c: { req: { json(): Promise<unknown> } }) => AdminAccountsRequest.safeParse(await c.req.json().catch(() => null));
 

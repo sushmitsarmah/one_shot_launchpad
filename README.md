@@ -260,6 +260,41 @@ Two routes; the server picks one per page: page payout target > creator's key > 
 * Checks: `src/loofta.test.ts`, `TICKERS=… bun scripts/e2e-loofta.ts` (bogus key rejected by Loofta, optional `PAYTO_EMAIL` target kept out of public responses, `CHECKOUT=1` creates one real unpaid link and checks it opens), `LOOFTA_KEY_FILE=… bun scripts/e2e-loofta-key.ts` (stores the e2e creator's key), `SLUG=… bun scripts/headless-loofta.ts`.
 * Not used: Loofta's npm `@loofta/pay-sdk` (a React button that needs a Loofta-issued `organizationId`) and the payouts API (it sends from the integrator's own balance).
 
+## Autopilot agent
+
+An AI agent with its own NEAR account that runs a tiny token business on rules a human sets: it generates ideas,
+drops duplicate / invalid / taken tickers, launches the tokens from its own prepaid vault credits, lists them on
+Rhea, and writes every run to a public ledger. Live agent: `yeetpad-autopilot.testnet`, ledger at
+[yeetpad.fun/agent/yeetpad-autopilot.testnet](https://yeetpad.fun/agent/yeetpad-autopilot.testnet).
+
+**Its wallet.** The account has **no full-access key**. `scripts/setup-agent.ts` created it with a temporary
+full-access key held only in memory, deposited its NEAR as Yeetpad credits, added a function-call key limited to
+the vault (`launch-vault.osl-launchpad-5786.testnet`, method `get_balance`, 0.01 NEAR allowance), then deleted the
+full-access key on-chain. The limited key can't move NEAR or call any other contract; it's only used to sign the
+NEP-413 sign-in. Sign-in accepts such a key only for accounts admins listed as agents (`AGENT_ACCOUNTS` in
+`wrangler.jsonc`, or `POST /api/admin/agents`); every other account still needs a full-access key.
+
+**Human rules** live in [`agent.config.json`](agent.config.json): launches per run, max credits per day, theme,
+venue (`none` / `rhea`). The agent publishes them each run, and the API enforces, server-side:
+- the **kill switch** (KV, admins only: `bun run agent:kill on|off` or `POST /api/admin/agent/kill`). While on,
+  every gated call by the agent fails with 423;
+- the **daily cap**: min(its rules, `AGENT_MAX_DAILY_NEAR`), against a server-side spend counter (429 when over).
+
+Try it:
+1. `bun run autopilot`: see it sign in with the limited key, generate 3 ideas, launch them and list on Rhea in
+   about 40 s, then print the ledger URL.
+2. Open the ledger: see the key badge ("function-call key only, vault only"), credits, rules, kill switch, cap
+   used today, and each run with token pages (`/t/<slug>`), NearBlocks and Rhea pool links and tx hashes.
+3. `bun run agent:kill on yeetpad-autopilot.testnet demo`, then `bun run autopilot`: see the run stop, recorded
+   as `stopped` in the ledger (`SKIP_PRECHECK=1` shows the API refusing it too). `bun run agent:kill off` resumes.
+4. Lower `maxCreditsPerDayNear` below today's spend and run again: see it stop on the daily cap.
+
+Honest limits: **testnet only**. It **spends but doesn't earn** on testnet (there are no real trading fees to
+collect), so it runs until its credits or daily cap run out. Credits can't be withdrawn back, since nobody holds a
+full-access key. It runs on demand (`bun run autopilot`, or any cron); there's no Worker cron trigger yet. The
+ledger is written by the agent's own session, so it's the agent's account of its runs; every entry links the
+on-chain transactions to check it.
+
 ## Deploy contracts (testnet)
 
 ```bash

@@ -1,0 +1,36 @@
+/* Autopilot ledger page (/agent/<account>). Full width, Yeetpad sticker style. */
+.ag-main { width: calc(100% - 3rem); margin: 0 auto; padding: 1.6rem 0 2rem; }
+.ag-main .ag-loading, .ag-main .ag-missing, .ag-main .ag-grid, .ag-main .ag-h, .ag-main .ag-runs { display: none; }
+.ag-main[data-state="loading"] .ag-loading { display: block; }
+.ag-main[data-state="missing"] .ag-missing { display: block; }
+.ag-main[data-state="ready"] .ag-grid { display: grid; }
+.ag-main[data-state="ready"] .ag-h, .ag-main[data-state="ready"] .ag-runs { display: block; }
+.ag-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.2rem; margin: 1rem 0 1.6rem; }
+.ag-card h2, .ag-h { font-family: var(--display); font-weight: 400; margin: 0 0 0.6rem; font-size: 1.35rem; }
+.ag-acct { margin: 0 0 0.6rem; overflow-wrap: anywhere; }
+.ag-acct code { font-weight: 700; }
+.ag-badge { display: inline-block; border: 2.5px solid var(--ink); border-radius: 999px; padding: 0.2rem 0.75rem; font-weight: 700; font-size: 0.92rem; background: var(--white); box-shadow: 3px 3px 0 var(--ink); margin-bottom: 0.7rem; }
+.ag-badge.good { background: var(--lime); }
+.ag-badge.bad { background: var(--pink); color: var(--white); }
+.ag-keys { list-style: none; padding: 0; margin: 0 0 0.6rem; font-size: 0.9rem; overflow-wrap: anywhere; }
+.ag-dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.9rem; margin: 0; }
+.ag-dl dt { color: var(--ink-soft); font-weight: 500; }
+.ag-dl dd { margin: 0; overflow-wrap: anywhere; }
+.ag-cap { margin-top: 0.8rem; }
+.ag-cap-bar { height: 0.9rem; border: 2.5px solid var(--ink); border-radius: 999px; background: var(--white); overflow: hidden; }
+.ag-cap-bar span { display: block; height: 100%; background: var(--orange); width: 0; }
+.ag-runs { display: grid; gap: 1rem; }
+.ag-run { transform: none !important; }
+.ag-run-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.8rem; }
+.ag-run-head small { color: var(--ink-soft); }
+.ag-st { border: 2px solid var(--ink); border-radius: 999px; padding: 0 0.6rem; font-weight: 700; text-transform: uppercase; font-size: 0.78rem; background: var(--white); }
+.ag-st.st-ok { background: var(--lime); }
+.ag-st.st-partial { background: var(--yellow); }
+.ag-st.st-failed, .ag-st.st-stopped { background: var(--pink); color: var(--white); }
+.ag-reason { font-weight: 700; margin: 0.5rem 0 0; }
+.ag-prompt, .ag-dropped, .ag-txs { margin: 0.5rem 0 0; color: var(--ink-soft); font-size: 0.92rem; overflow-wrap: anywhere; }
+.ag-table { width: 100%; border-collapse: collapse; margin-top: 0.7rem; font-size: 0.95rem; }
+.ag-table th { text-align: left; border-bottom: 2.5px solid var(--ink); padding: 0.3rem 0.5rem; }
+.ag-table td { border-bottom: 1px dashed rgba(27, 20, 51, 0.25); padding: 0.35rem 0.5rem; vertical-align: top; }
+.ag-main .bad { color: #c2185b; }
+@media (max-width: 640px) { .ag-main { width: calc(100% - 1.5rem); } .ag-table { font-size: 0.85rem; } }

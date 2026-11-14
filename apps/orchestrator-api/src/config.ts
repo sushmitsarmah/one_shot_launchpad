@@ -111,6 +111,13 @@ export function buildConfig(src: EnvSource = {}) {
     allowedAccounts: list(env("ALLOWED_ACCOUNTS", "")),
     /** Can use /api/admin/* (approve/revoke/remove waitlist requests). Implicitly allowlisted. */
     adminAccounts: list(env("ADMIN_ACCOUNTS", "")),
+    /**
+     * Autopilot agents (README "Autopilot agent"): accounts that may sign in with a function-call key limited to
+     * the vault (no full-access key). Union with KV `agent:<account>` set by admins via /api/admin/agents.
+     */
+    agentAccounts: list(env("AGENT_ACCOUNTS", "")),
+    /** Server-side hard ceiling on an agent's daily spend (NEAR), whatever its own config says. */
+    agentMaxDailyNear: Number(env("AGENT_MAX_DAILY_NEAR", "2")),
   };
 }
 

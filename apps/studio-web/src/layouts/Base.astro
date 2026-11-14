@@ -73,6 +73,7 @@ const url = new URL(Astro.url.pathname, SITE).toString();
           <a href="/app/">App</a>
           <a href="/#how">How it works</a>
           <a href="/#faq">FAQ</a>
+          {!IS_MAINNET && <a href="/agent/yeetpad-autopilot.testnet">🤖 Autopilot agent</a>}
           <a href="https://github.com/sushmitsarmah/one_shot_launchpad" target="_blank" rel="noreferrer">GitHub ↗</a>
         </p>
       </div>

@@ -1,2 +1,4 @@
 /t/:id  /t/  200
 /t/:id/  /t/  200
+/agent/:id  /agent/  200
+/agent/:id/  /agent/  200

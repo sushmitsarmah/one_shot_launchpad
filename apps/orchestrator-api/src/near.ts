@@ -56,13 +56,29 @@ export async function getRequiredLaunchDeposit(): Promise<bigint> {
 
 /** True if `publicKey` is a FullAccess key of `accountId` (false if the key or account doesn't exist). */
 export async function isFullAccessKey(accountId: string, publicKey: string): Promise<boolean> {
+  return (await getKeyPermission(accountId, publicKey)) === "FullAccess";
+}
+
+/** The key's on-chain permission, or null if the key or account doesn't exist. */
+export async function getKeyPermission(accountId: string, publicKey: string): Promise<import("./auth").KeyPermission> {
   try {
     const k = await getProvider().viewAccessKey({ accountId, publicKey });
-    return k.permission === "FullAccess";
+    return k.permission as import("./auth").KeyPermission;
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
-    if (/does not exist|UNKNOWN_ACCESS_KEY|UNKNOWN_ACCOUNT|AccessKeyDoesNotExist|doesn't exist/i.test(msg)) return false;
+    if (/does not exist|UNKNOWN_ACCESS_KEY|UNKNOWN_ACCOUNT|AccessKeyDoesNotExist|doesn't exist/i.test(msg)) return null;
     throw e;
+  }
+}
+
+/** All access keys of an account (public key + permission); [] if the account doesn't exist. */
+export async function listAccessKeys(accountId: string): Promise<{ publicKey: string; permission: import("./auth").KeyPermission }[]> {
+  if (config.nearMock) return [];
+  try {
+    const r = await getProvider().viewAccessKeyList({ accountId });
+    return r.keys.map((k) => ({ publicKey: k.public_key, permission: k.access_key.permission as import("./auth").KeyPermission }));
+  } catch {
+    return [];
   }
 }
 

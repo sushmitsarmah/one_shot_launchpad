@@ -1,0 +1,149 @@
+---
+// Public ledger of a Yeetpad Autopilot agent. Served for every /agent/<account> via public/_redirects;
+// data from the API's public GET /api/agent/<account> (README "Autopilot agent").
+import Base from "../../layouts/Base.astro";
+import "../../styles/global.css";
+import "../../styles/agent.css";
+import { NET_LABEL } from "../../lib/config";
+---
+<Base title="Autopilot agent · Yeetpad" description={`Public ledger of an autonomous Yeetpad agent launching tokens on NEAR ${NET_LABEL} under human-set rules.`} page="app">
+  <main class="ag-main" id="ag" data-state="loading">
+    <div class="app-hero">
+      <h1>🤖 <span class="hl-app">Autopilot</span> ledger</h1>
+      <p>An AI agent with its own NEAR account, launching tokens on rules a human set. Every run is public.</p>
+    </div>
+    <p class="ag-loading">Loading…</p>
+    <p class="ag-missing card" id="ag-missing"></p>
+    <section class="ag-grid">
+      <div class="card ag-card">
+        <h2>Agent</h2>
+        <p class="ag-acct"><code id="ag-account"></code> <a id="ag-acct-link" target="_blank" rel="noreferrer">NearBlocks ↗</a></p>
+        <div id="ag-keybadge" class="ag-badge"></div>
+        <ul id="ag-keys" class="ag-keys"></ul>
+        <dl class="ag-dl">
+          <dt>Vault credits</dt><dd><b id="ag-credits"></b> NEAR</dd>
+          <dt>Network</dt><dd id="ag-net"></dd>
+          <dt>Vault</dt><dd><code id="ag-vault"></code></dd>
+        </dl>
+      </div>
+      <div class="card ag-card">
+        <h2>Human-set rules</h2>
+        <div id="ag-kill" class="ag-badge"></div>
+        <dl class="ag-dl" id="ag-rules"></dl>
+        <div class="ag-cap"><div class="ag-cap-bar"><span id="ag-cap-fill"></span></div><small id="ag-cap-text"></small></div>
+      </div>
+      <div class="card ag-card">
+        <h2>Totals</h2>
+        <dl class="ag-dl">
+          <dt>Runs</dt><dd id="ag-t-runs"></dd>
+          <dt>Tokens launched</dt><dd id="ag-t-tokens"></dd>
+          <dt>Listed on Rhea</dt><dd id="ag-t-listed"></dd>
+          <dt>Credits spent</dt><dd id="ag-t-spent"></dd>
+          <dt>Earned</dt><dd>0 NEAR <small>(testnet: spends, doesn't earn)</small></dd>
+        </dl>
+      </div>
+    </section>
+    <h2 class="ag-h">Runs</h2>
+    <div id="ag-runs" class="ag-runs"></div>
+  </main>
+  <script>
+    import { API_URL } from "../../lib/config";
+    const ACCOUNT_RE = /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/;
+    const root = document.getElementById("ag")!;
+    const $ = (id: string) => document.getElementById(id)!;
+    const near = (y: string | bigint) => (Number(BigInt(y)) / 1e24).toFixed(4);
+    const el = (tag: string, cls?: string, text?: string) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    const link = (href: string, text: string) => { const a = el("a", "", text) as HTMLAnchorElement; a.href = href; a.target = "_blank"; a.rel = "noreferrer"; return a; };
+    const safeUrl = (u: unknown) => (typeof u === "string" && /^https:\/\//.test(u) ? u : null);
+    const account = decodeURIComponent(location.pathname.split("/")[2] ?? "").toLowerCase();
+    const fail = (m: string) => { $("ag-missing").textContent = m; root.dataset.state = "missing"; };
+    const dd = (dl: HTMLElement, k: string, v: string | Node) => { dl.append(el("dt", "", k)); const d = el("dd"); d.append(v); dl.append(d); };
+
+    if (!account || !ACCOUNT_RE.test(account)) fail("Add an agent account to the URL, like /agent/yeetpad-autopilot.testnet.");
+    else
+      fetch(`${API_URL}/api/agent/${account}`)
+        .then(async (r) => {
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) return fail(j.error ?? `HTTP ${r.status}`);
+          document.title = `${account} · Autopilot · Yeetpad`;
+          const ex = String(j.explorerBase).replace(/\/$/, "");
+          $("ag-account").textContent = j.account;
+          ($("ag-acct-link") as HTMLAnchorElement).href = `${ex}/address/${j.account}`;
+          const kb = $("ag-keybadge");
+          if (!j.isAgent) { kb.textContent = "⚠ not a registered agent"; kb.classList.add("bad"); }
+          else if (j.vaultOnly) { kb.textContent = "🔒 Function-call key only · vault only · no full-access key"; kb.classList.add("good"); }
+          else if (j.fullAccessKeys > 0) { kb.textContent = `⚠ has ${j.fullAccessKeys} full-access key(s)`; kb.classList.add("bad"); }
+          else { kb.textContent = "Function-call keys only"; }
+          const ks = $("ag-keys");
+          for (const k of j.keys ?? []) {
+            const li = el("li");
+            li.append(el("code", "", `${String(k.publicKey).slice(0, 18)}…`), " ", k.type === "full_access" ? "full access" : `function call → ${k.receiver}${k.methods?.length ? ` [${k.methods.join(", ")}]` : " [any method]"}${k.allowance ? ` · allowance ${near(k.allowance)} NEAR` : ""}`);
+            ks.append(li);
+          }
+          $("ag-credits").textContent = j.creditsNear;
+          $("ag-net").textContent = j.network;
+          $("ag-vault").textContent = j.vault;
+
+          const kill = $("ag-kill");
+          if (j.kill?.paused) { kill.textContent = `⏸ Kill switch ON${j.kill.reason ? `: ${j.kill.reason}` : ""}`; kill.classList.add("bad"); }
+          else { kill.textContent = "▶ Kill switch off · agent may run"; kill.classList.add("good"); }
+          if (j.kill?.at) kill.title = `last set by ${j.kill.by} at ${new Date(j.kill.at).toLocaleString()}`;
+          const rl = $("ag-rules");
+          const ru = j.rules;
+          if (ru) {
+            dd(rl, "Launches per run", String(ru.launchesPerRun));
+            dd(rl, "Max credits / day", `${ru.maxCreditsPerDayNear} NEAR (server ceiling ${j.serverMaxDailyNear})`);
+            dd(rl, "Theme", ru.theme);
+            dd(rl, "Venue", ru.listOn === "rhea" ? `Rhea DCL (opening FDV ${ru.rhea?.openingFdvNear ?? 1000} NEAR)` : "none (token + page only)");
+            if (ru.schedule) dd(rl, "Schedule", ru.schedule);
+          } else dd(rl, "Rules", "not published yet");
+          const spent = BigInt(j.spentTodayYocto), cap = BigInt(j.capYocto);
+          const pct = cap > 0n ? Math.min(100, Number((spent * 1000n) / cap) / 10) : 100;
+          ($("ag-cap-fill") as HTMLElement).style.width = `${pct}%`;
+          $("ag-cap-text").textContent = `Daily cap: ${near(spent)} of ${near(cap)} NEAR used today (UTC)`;
+
+          const runs: any[] = j.runs ?? [];
+          const all = runs.flatMap((r) => r.tokens ?? []);
+          $("ag-t-runs").textContent = String(runs.length);
+          $("ag-t-tokens").textContent = String(all.filter((t) => t.ok).length);
+          $("ag-t-listed").textContent = String(all.filter((t) => t.listing?.ok).length);
+          $("ag-t-spent").textContent = `${near(runs.reduce((s, r) => s + BigInt(r.creditsSpentYocto ?? "0"), 0n))} NEAR`;
+
+          const host = $("ag-runs");
+          if (!runs.length) host.append(el("p", "card", "No runs yet."));
+          for (const r of runs) {
+            const c = el("article", `card ag-run st-${r.status}`);
+            const head = el("header", "ag-run-head");
+            head.append(el("span", `ag-st st-${r.status}`, r.status), el("b", "", new Date(r.startedAt).toLocaleString()), el("small", "", `${((r.finishedAt - r.startedAt) / 1000).toFixed(1)} s · ${near(r.creditsSpentYocto)} NEAR · ${r.listOn === "rhea" ? "Rhea" : "no venue"} · ${r.runId}`));
+            c.append(head);
+            if (r.reason) c.append(el("p", "ag-reason", r.reason));
+            c.append(el("p", "ag-prompt", `Prompt: “${r.prompt}”`));
+            if ((r.tokens ?? []).length) {
+              const t = el("table", "ag-table");
+              t.innerHTML = "<thead><tr><th>Token</th><th>Page</th><th>Contract</th><th>Rhea</th></tr></thead>";
+              const tb = el("tbody");
+              for (const tk of r.tokens) {
+                const tr = el("tr");
+                const n = el("td"); n.append(el("b", "", `$${String(tk.ticker).toUpperCase()}`), " ", el("span", "", tk.name ?? ""));
+                const pg = el("td"); if (tk.ok && tk.slug) pg.append(link(`/t/${tk.slug}`, `/t/${tk.slug}`)); else pg.append(el("span", "bad", tk.error ?? "failed"));
+                const ct = el("td"); if (tk.tokenId) ct.append(link(`${ex}/address/${tk.tokenId}`, "NearBlocks ↗"));
+                const rh = el("td");
+                const u = safeUrl(tk.listing?.url);
+                if (tk.listing?.ok && u) rh.append(link(u, "Pool ↗")); else if (tk.listing) rh.append(el("span", "bad", "failed")); else rh.append("—");
+                tr.append(n, pg, ct, rh); tb.append(tr);
+              }
+              t.append(tb); c.append(t);
+            }
+            if ((r.dropped ?? []).length) c.append(el("p", "ag-dropped", `Dropped: ${r.dropped.map((d: any) => `${d.ticker} (${d.why})`).join(", ")}`));
+            if ((r.txHashes ?? []).length) {
+              const p = el("p", "ag-txs"); p.append("Transactions: ");
+              r.txHashes.forEach((h: string, i: number) => { if (i) p.append(" · "); p.append(link(`${ex}/txns/${h}`, `${h.slice(0, 8)}…`)); });
+              c.append(p);
+            }
+            host.append(c);
+          }
+          root.dataset.state = "ready";
+        })
+        .catch((e) => fail(`Couldn't reach the API: ${e.message ?? e}`));
+  </script>
+</Base>

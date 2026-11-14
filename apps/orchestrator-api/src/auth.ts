@@ -93,6 +93,12 @@ export interface VerifyOptions {
   now?: number;
   /** Return true if publicKey is a FullAccess key of accountId. Omit to skip (mock mode only). */
   isFullAccessKey?: (accountId: string, publicKey: string) => Promise<boolean>;
+  /**
+   * Autopilot agents only: return true if `publicKey` is a key `accountId` may sign in with even though it is
+   * not FullAccess (a function-call key limited to the vault, on an admin-listed agent account). Only consulted
+   * when the full-access check fails, so normal users are unaffected.
+   */
+  isAgentKey?: (accountId: string, publicKey: string) => Promise<boolean>;
   /** Return false if this nonce was already used (replay). */
   consumeNonce?: (nonceB64: string, expiresAt: number) => boolean;
 }
@@ -139,12 +145,26 @@ export async function verifySignIn(req: SessionRequest, opts: VerifyOptions): Pr
   if (!ok) throw new AuthError("invalid signature");
 
   if (opts.isFullAccessKey && !(await opts.isFullAccessKey(req.accountId, req.publicKey))) {
-    throw new AuthError("public key is not a full-access key of this account");
+    if (!(opts.isAgentKey && (await opts.isAgentKey(req.accountId, req.publicKey)))) {
+      throw new AuthError("public key is not a full-access key of this account");
+    }
   }
   if (opts.consumeNonce && !opts.consumeNonce(req.nonce, parsed.issuedAt + MAX_MESSAGE_AGE_MS)) {
     throw new AuthError("nonce already used");
   }
   return req.accountId;
+}
+
+/** On-chain access key permission as returned by view_access_key (null = no such key). */
+export type KeyPermission = "FullAccess" | { FunctionCall: { receiver_id: string; method_names: string[]; allowance?: string | null } } | null;
+
+/**
+ * Agent sign-in rule: a FunctionCall key whose receiver is exactly the vault contract, on an account that admins
+ * listed as an agent (AGENT_ACCOUNTS / KV agent:<account>). Such a key can't move NEAR or touch other contracts.
+ */
+export function agentKeyAllowed(perm: KeyPermission, opts: { vaultContract: string; isAgent: boolean }): boolean {
+  if (!opts.isAgent || !perm || perm === "FullAccess") return false;
+  return perm.FunctionCall?.receiver_id === opts.vaultContract;
 }
 
 /** Best-effort replay cache (per process / Worker isolate); the 10-minute freshness window is the main guard. */
